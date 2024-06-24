@@ -1,0 +1,25 @@
+python finetune.py --output_dir ./test_config \
+    --dataset_name openfold \
+    --train_file ../test_case \
+    --remove_unused_columns False \
+    --do_train True \
+    --overwrite_output_dir True \
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
+    --num_train_epochs 200 \
+    --max_steps 200000 \
+    --learning_rate 5e-5 \
+    --lr_scheduler_type polynomial \
+    --warmup_ratio 0.01 \
+    --weight_decay 1e-5 \
+    --metric_for_best_model eval_loss \
+    --load_best_model_at_end True \
+    --evaluation_strategy steps \
+    --eval_steps 20000 \
+    --save_strategy steps \
+    --save_steps 20000 \
+    --save_total_limit 10 \
+    --prediction_loss_only True \
+    --num_alignments 32 \
+    --fp16 True \
+    # --no_cuda True # for debug
