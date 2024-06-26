@@ -4,6 +4,7 @@ import torch
 import pickle
 import random
 import string
+from tqdm import tqdm
 from typing import Sequence, Tuple, Union
 from torch.utils.data import Dataset
 from constant import proteinseq_toks
@@ -282,7 +283,7 @@ class MSABatchConverter(BatchConverter):
         return {'input_ids':input_ids, 'labels':labels, "attention_mask":attention_mask, "decoder_attention_mask":decoder_attention_mask, "esm": esm_emb}
 
 class MSADataSet(Dataset):
-    def __init__(self, data_args, num_alignments):
+    def __init__(self, data_args, num_alignments, threshold):
         super().__init__()
         self.data_args = data_args
         self.data_path = self.data_args.train_file
@@ -291,14 +292,16 @@ class MSADataSet(Dataset):
             self.data = []
             
             datas = [f for f in os.listdir(self.data_path)]
-            for data in datas:
+            for data in tqdm(datas):
                 path = os.path.join(self.data_path, data)
                 
                 with open(path, "rb") as f:
                     try:
                         protein_data = pickle.load(f, encoding='bytes')
-                        protein_data['msa'] = random.sample(protein_data['msa'], num_alignments)
-                        self.data.append(protein_data) # name msa emb seq
+                        
+                        if len(protein_data['seq'] <= threshold):
+                            protein_data['msa'] = random.sample(protein_data['msa'], num_alignments)
+                            self.data.append(protein_data) # name msa emb seq
                     except Exception as e:
                         print(f"Error loading data from {path}: {e}")
         else:

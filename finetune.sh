@@ -1,4 +1,4 @@
-python finetune.py --output_dir ./test_config \
+python finetune.py --output_dir ./openfold32 \
     --dataset_name openfold \
     --train_file ../test_case \
     --remove_unused_columns False \
@@ -21,5 +21,7 @@ python finetune.py --output_dir ./test_config \
     --save_total_limit 10 \
     --prediction_loss_only True \
     --num_alignments 32 \
-    --fp16 True \
+    --threshold 1536 \
+    --no_cuda True
+    # --fp16 True \
     # --no_cuda True # for debug

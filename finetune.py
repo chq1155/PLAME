@@ -46,7 +46,7 @@ from transformers.utils.versions import require_version
 
 warnings.filterwarnings("ignore")
 os.environ["WANDB_DISABLED"] = "true"
-# os.environ["WANDB_PROJECT"] = "RNA3D"
+# os.environ["WANDB_PROJECT"] = "ProteinESMFold"
 # os.environ["WANDB_LOG_MODEL"] = "checkpoint"
 # os.environ["WANDB_SILENT"] = "true"
 # wandb.login(key='ff36dda227a04150a0cacc715b2460176efe3144')
@@ -217,6 +217,11 @@ class DataTrainingArguments:
         metadata={"help": "the number of seq in 1 msa."},
     )
 
+    threshold: int = field(
+        default=1536,
+        metadata={"help": "the max seq length in 1 batch."},
+    )
+
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
             raise ValueError("Need either a dataset name or a training/validation file.")
@@ -280,7 +285,7 @@ def main():
     tokenizer = Alphabet.from_architecture(name="msa_transformer")
 
     data_args.tokenizer = tokenizer
-    train_dataset = MSADataSet(data_args, num_alignments=data_args.num_alignments)
+    train_dataset = MSADataSet(data_args, num_alignments=data_args.num_alignments, threshold=data_args.threshold)
 
     valid_ratio = 0.1
     test_ratio = 0.1
