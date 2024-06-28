@@ -45,11 +45,11 @@ from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 
 warnings.filterwarnings("ignore")
-os.environ["WANDB_DISABLED"] = "true"
-# os.environ["WANDB_PROJECT"] = "ProteinESMFold"
-# os.environ["WANDB_LOG_MODEL"] = "checkpoint"
-# os.environ["WANDB_SILENT"] = "true"
-# wandb.login(key='ff36dda227a04150a0cacc715b2460176efe3144')
+# os.environ["WANDB_DISABLED"] = "true"
+os.environ["WANDB_PROJECT"] = "ProteinESMFold"
+os.environ["WANDB_LOG_MODEL"] = "checkpoint"
+os.environ["WANDB_SILENT"] = "true"
+wandb.login(key='ff36dda227a04150a0cacc715b2460176efe3144')
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.16.0.dev0")
@@ -240,7 +240,14 @@ def main():
         # let's parse it to get our arguments.
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+        model_args, data_args, training_args = parser.parse_args_into_dataclasses(
+        )
+
+    # Set FSDP-related arguments after parsing
+    training_args.fsdp = "full_shard auto_wrap"
+    training_args.fsdp_transformer_layer_cls_to_wrap = "T5Block"
+    training_args.fsdp_min_num_params = 0
+
     # Setup logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",

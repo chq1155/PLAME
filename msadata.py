@@ -299,7 +299,7 @@ class MSADataSet(Dataset):
                     try:
                         protein_data = pickle.load(f, encoding='bytes')
                         
-                        if len(protein_data['seq'] <= threshold):
+                        if len(protein_data['seq']) <= threshold:
                             protein_data['msa'] = random.sample(protein_data['msa'], num_alignments)
                             self.data.append(protein_data) # name msa emb seq
                     except Exception as e:

@@ -1675,6 +1675,7 @@ class MSA_AUGMENTOR(T5PreTrainedModel):
     ):
        
         use_cache = use_cache if use_cache is not None else self.config.use_cache
+        use_cache = False
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # FutureWarning: head_mask was separated into two input args - head_mask, decoder_head_mask

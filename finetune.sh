@@ -1,6 +1,6 @@
-python finetune.py --output_dir ./openfold32 \
+accelerate launch --num_processes 4 --num_machines=1 --mixed_precision='bf16' --dynamo_backend='cudagraphs' finetune.py --output_dir ./openfold32 \
     --dataset_name openfold \
-    --train_file ../test_case \
+    --train_file /uac/gds/hqcao23/hqcao/openfold/esm_msa/train \
     --remove_unused_columns False \
     --do_train True \
     --overwrite_output_dir True \
@@ -21,7 +21,13 @@ python finetune.py --output_dir ./openfold32 \
     --save_total_limit 10 \
     --prediction_loss_only True \
     --num_alignments 32 \
-    --threshold 1536 \
-    --no_cuda True
-    # --fp16 True \
+    --threshold 512 \
+    --fp16 False \
+    --gradient_accumulation_steps 4 \
+    --bf16 True \
+    # --gradient_checkpointing True \
+
+
+    # --use_cache False \
     # --no_cuda True # for debug
+
