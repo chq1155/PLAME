@@ -5,6 +5,7 @@ import pickle
 import random
 import string
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
 from typing import Sequence, Tuple, Union
 from torch.utils.data import Dataset
 from constant import proteinseq_toks
@@ -273,6 +274,39 @@ class MSABatchConverter(BatchConverter):
             esm_embeddings[i, : esm_tokens.size(0), : esm_tokens.size(1)] = esm_tokens
         
         return esm_embeddings, tokens
+    
+    def infer_batch_convert(self, inputs: Union[str, torch.Tensor], num_alignments: int):
+        seq = inputs[0]
+        esm = inputs[1]
+        batch_size = 1
+        max_seqlen = len(seq)
+
+        tokens = torch.empty(
+            (
+                batch_size,
+                num_alignments,
+                max_seqlen
+                + int(self.alphabet.prepend_bos)
+                + int(self.alphabet.append_eos),
+            ),
+        )
+        tokens.fill_(self.alphabet.padding_idx)
+        
+        esm_embeddings = torch.empty(
+            (
+                batch_size,
+                max_seqlen,
+                1280
+            )
+        )
+        esm_embeddings.fill_(self.alphabet.padding_idx)
+        
+        esm_tokens = super().esm_convert(esm)
+        seq_tokens = super().seq_convert(num_alignments, esm)
+        tokens[0, : seq_tokens.size(0), : seq_tokens.size(1)] = seq_tokens
+        esm_embeddings[0, : esm_tokens.size(0), : esm_tokens.size(1)] = esm_tokens
+        
+        return esm_embeddings, tokens
 
     def __call__(self, batch):
         labels = self.msa_batch_convert([example["msa"] for example in batch])
@@ -291,23 +325,27 @@ class MSADataSet(Dataset):
         if os.path.isdir(self.data_path):
             self.data = []
             
-            datas = [f for f in os.listdir(self.data_path)]
-            for data in tqdm(datas):
-                path = os.path.join(self.data_path, data)
-                
-                with open(path, "rb") as f:
-                    try:
-                        protein_data = pickle.load(f, encoding='bytes')
-                        
-                        if len(protein_data['seq']) <= threshold:
-                            protein_data['msa'] = random.sample(protein_data['msa'], num_alignments)
-                            self.data.append(protein_data) # name msa emb seq
-                    except Exception as e:
-                        print(f"Error loading data from {path}: {e}")
+            datas = [os.path.join(self.data_path, data) for data in os.listdir(self.data_path)]
+        
+            with ThreadPoolExecutor() as executor:
+                results = list(tqdm(executor.map(self.read_pickle, datas), total=len(datas)))
+            
+            for result in results:
+                if result is not None and len(result['seq']) <= threshold:
+                    result['msa'] = random.sample(result['msa'], num_alignments)
+                    self.data.append(result) # name msa emb seq
         else:
             with open(self.data_path, "rb") as f:
                 self.data = pickle.load(f)
         
+    def read_pickle(self, path):
+        with open(path, "rb") as f:
+            try:
+                protein_data = pickle.load(f, encoding='bytes')
+                return protein_data
+            except Exception as e:
+                print(f"Error loading {path}: {e}")
+                return None
 
     def __len__(self):
         return len(self.data)
@@ -319,34 +357,14 @@ class MSAInferenceDataSet(Dataset):
     def __init__(self, args):
         super().__init__()
         
-        table = str.maketrans(dict.fromkeys(string.ascii_lowercase))
-        
         self.data = []
         for filename in os.listdir(args.data_path):
-            msa_data = {}
-            if filename.endswith('.a3m'): # for .a3m file
-                name = filename.strip('.a3m')
-                msa_data['msa_name'] = name
-                
-            elif filename.endswith('.afa'): # for .a3m file
-                name = filename.strip('.afa')
-                msa_data['msa_name'] = name
-                
-            input_file_path = os.path.join(args.data_path, filename)
-            seq_alignments = []
-            with open(input_file_path, 'r') as file:
-                content = []
-                for i, line in enumerate(file):
-                    content.append(line.strip())
-                for i, line in enumerate(content):
-                    if i % 2 == 0 and len(line) > 0 and line[0] == ">":
-                        label = line
-                        seq = content[i+1].replace('W', 'A').replace('R', 'A').replace('Y', 'C').replace('E', 'A').replace('I', 'A').replace('P', 'G').replace('T', 'U').translate(table)
-                        seq_alignments.append((label, seq))
-                    
-                msa_data['msa'] = seq_alignments
+            data_path = os.path.join(args.data_path, filename)
+            
+            with open(data_path, "rb") as f:
+                data = pickle.load(f)
         
-            self.data.append(msa_data)
+            self.data.append(data) # name, seq, emb
 
     def __len__(self):
         return len(self.data)

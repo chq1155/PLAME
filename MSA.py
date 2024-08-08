@@ -28,10 +28,10 @@ from torch.nn import CrossEntropyLoss
 from torch.utils.checkpoint import checkpoint
 from dataclasses import dataclass
 from transformers import LogitsProcessorList,StoppingCriteriaList,T5Config
-from transformers.generation.beam_constraints import Constraint, DisjunctiveConstraint, PhrasalConstraint
-from transformers.generation.beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
-# from transformers.generation_beam_constraints import Constraint, DisjunctiveConstraint, PhrasalConstraint
-# from transformers.generation_beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
+# from transformers.generation.beam_constraints import Constraint, DisjunctiveConstraint, PhrasalConstraint
+# from transformers.generation.beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
+from transformers.generation_beam_constraints import Constraint, DisjunctiveConstraint, PhrasalConstraint
+from transformers.generation_beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
 from transformers.activations import ACT2FN
 from transformers.file_utils import (
     DUMMY_INPUTS,
@@ -47,15 +47,7 @@ from transformers.modeling_outputs import (
 from transformers.modeling_utils import PreTrainedModel, find_pruneable_heads_and_indices, prune_linear_layer
 from transformers.utils import logging,ModelOutput
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
-from transformers.generation.stopping_criteria import (
-    MaxLengthCriteria,
-    MaxTimeCriteria,
-    StoppingCriteria,
-    StoppingCriteriaList,
-    validate_stopping_criteria,
-)
-
-# from transformers.generation_stopping_criteria import (
+# from transformers.generation.stopping_criteria import (
 #     MaxLengthCriteria,
 #     MaxTimeCriteria,
 #     StoppingCriteria,
@@ -63,25 +55,15 @@ from transformers.generation.stopping_criteria import (
 #     validate_stopping_criteria,
 # )
 
-from transformers.generation.logits_process import (
-    EncoderNoRepeatNGramLogitsProcessor,
-    ExponentialDecayLengthPenalty,
-    ForcedBOSTokenLogitsProcessor,
-    ForcedEOSTokenLogitsProcessor,
-    HammingDiversityLogitsProcessor,
-    InfNanRemoveLogitsProcessor,
-    LogitsProcessorList,
-    MinLengthLogitsProcessor,
-    NoBadWordsLogitsProcessor,
-    NoRepeatNGramLogitsProcessor,
-    PrefixConstrainedLogitsProcessor,
-    RepetitionPenaltyLogitsProcessor,
-    TemperatureLogitsWarper,
-    TopKLogitsWarper,
-    TopPLogitsWarper,
-    TypicalLogitsWarper,
+from transformers.generation_stopping_criteria import (
+    MaxLengthCriteria,
+    MaxTimeCriteria,
+    StoppingCriteria,
+    StoppingCriteriaList,
+    validate_stopping_criteria,
 )
-# from transformers.generation_logits_process import (
+
+# from transformers.generation.logits_process import (
 #     EncoderNoRepeatNGramLogitsProcessor,
 #     ExponentialDecayLengthPenalty,
 #     ForcedBOSTokenLogitsProcessor,
@@ -99,6 +81,24 @@ from transformers.generation.logits_process import (
 #     TopPLogitsWarper,
 #     TypicalLogitsWarper,
 # )
+from transformers.generation_logits_process import (
+    EncoderNoRepeatNGramLogitsProcessor,
+    ExponentialDecayLengthPenalty,
+    ForcedBOSTokenLogitsProcessor,
+    ForcedEOSTokenLogitsProcessor,
+    HammingDiversityLogitsProcessor,
+    InfNanRemoveLogitsProcessor,
+    LogitsProcessorList,
+    MinLengthLogitsProcessor,
+    NoBadWordsLogitsProcessor,
+    NoRepeatNGramLogitsProcessor,
+    PrefixConstrainedLogitsProcessor,
+    RepetitionPenaltyLogitsProcessor,
+    TemperatureLogitsWarper,
+    TopKLogitsWarper,
+    TopPLogitsWarper,
+    TypicalLogitsWarper,
+)
 
 
 logger = logging.get_logger(__name__)
@@ -1222,10 +1222,11 @@ class T5Block(nn.Module):
 
 
 class T5Stack(T5PreTrainedModel):
-    def __init__(self, config, embed_tokens=None):
+    def __init__(self, config, embed_tokens=None, esm_tokens=None):
         super().__init__(config)
 
         self.embed_tokens = embed_tokens #shared embeddings
+        self.esm_tokens = esm_tokens
         self.is_decoder = config.is_decoder
         self.axial_attention=config.axial_attention
         if self.is_decoder and self.axial_attention:
@@ -1265,6 +1266,7 @@ class T5Stack(T5PreTrainedModel):
 
         # Set embed_tokens to first layer
         self.embed_tokens = self.embed_tokens.to(self.first_device)
+        self.esm_tokens = self.esm_tokens.to(self.first_device)
         # Set final layer norm to last device
         self.final_layer_norm = self.final_layer_norm.to(self.last_device)
 
@@ -1276,6 +1278,7 @@ class T5Stack(T5PreTrainedModel):
         for i in range(len(self.block)):
             self.block[i] = self.block[i].to("cpu")
         self.embed_tokens = self.embed_tokens.to("cpu")
+        self.esm_tokens = self.esm_tokens.to("cpu")
         self.final_layer_norm = self.final_layer_norm.to("cpu")
         torch.cuda.empty_cache()
 
@@ -1299,12 +1302,14 @@ class T5Stack(T5PreTrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
+        esm=None,
     ):
      
         # Model parallel
         if self.model_parallel:
             torch.cuda.set_device(self.first_device)
             self.embed_tokens = self.embed_tokens.to(self.first_device)
+            self.esm_tokens = self.esm_tokens.to(self.first_device)
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -1328,9 +1333,16 @@ class T5Stack(T5PreTrainedModel):
             err_msg_prefix = "decoder_" if self.is_decoder else ""
             raise ValueError(f"You have to specify either {err_msg_prefix}input_ids or {err_msg_prefix}inputs_embeds")
 
-        if inputs_embeds is None:
+        if inputs_embeds is None and esm is None:
             assert self.embed_tokens is not None, "You have to initialize the model with valid token embeddings"
             inputs_embeds = self.embed_tokens(input_ids)
+
+        elif inputs_embeds is None and esm is not None:
+            # TODO
+            expand = input_ids.unsqueeze(-1).expand(-1, -1, -1, esm.shape[-1]).clone()
+            expand[:, :, :-1, :] = esm.unsqueeze(1)
+            
+            inputs_embeds = self.esm_tokens(expand)
 
         batch_size,num_alignments, seq_length = input_shape
 
@@ -1547,6 +1559,7 @@ class MSAT5(T5PreTrainedModel):
         self.model_dim = config.d_model
         # shared embedding matrix 
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
+        self.esm_input = nn.Linear(1280, config.d_model)
         self.debug=config.debug
         
         # Encoder
@@ -1558,7 +1571,7 @@ class MSAT5(T5PreTrainedModel):
             encoder_config.axial_attention=True
         else:
             encoder_config.axial_attention=False
-        self.encoder = T5Stack(encoder_config, self.shared)
+        self.encoder = T5Stack(encoder_config, self.shared, self.esm_input)
 
         # Decoder
         decoder_config = copy.deepcopy(config)
@@ -1641,6 +1654,7 @@ class MSAT5(T5PreTrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
+        esm=None
     ):
         if self.debug:
             print('-'*75)
@@ -1682,6 +1696,7 @@ class MSAT5(T5PreTrainedModel):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
+                esm=esm
             )
         elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
             encoder_outputs = BaseModelOutput(
@@ -1816,6 +1831,30 @@ class MSAT5(T5PreTrainedModel):
         else:
             decoder_start_token_id = self._get_decoder_start_token_id(decoder_start_token_id, bos_token_id)
             return torch.ones((batch_size,gen_seq_num,1), dtype=torch.long, device=device) * decoder_start_token_id
+        
+    def prepare_encoder_decoder_kwargs_for_MSA_generation(
+        self, inputs_tensor: torch.Tensor, esm: torch.Tensor, model_kwargs, model_input_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        # 1. get encoder
+        encoder = self.get_encoder()
+
+        # 2. prepare encoder args and encoder kwargs from model kwargs
+        irrelevant_prefix = ["decoder_", "cross_attn", "use_cache"]
+        encoder_kwargs = {
+            argument: value
+            for argument, value in model_kwargs.items()
+            if not any(argument.startswith(p) for p in irrelevant_prefix)
+        }
+
+        # 3. make sure that encoder returns `ModelOutput`
+        model_input_name = model_input_name if model_input_name is not None else self.main_input_name
+        encoder_kwargs["return_dict"] = True
+        encoder_kwargs[model_input_name] = inputs_tensor
+        encoder_kwargs["esm"] = esm
+        model_kwargs["encoder_outputs"] = encoder(**encoder_kwargs)
+
+        return model_kwargs
+    
     def prepare_inputs_for_generation(
         self,
         input_ids,
@@ -1874,14 +1913,15 @@ class MSAT5(T5PreTrainedModel):
     def generate( # 在这里推理
         self,
         inputs: Optional[torch.Tensor] = None,
+        esm: Optional[torch.Tensor] = None,
         max_length: Optional[int] = None,
         min_length: Optional[int] = None,
         do_sample: Optional[bool] = None,
         early_stopping: Optional[bool] = None,
         num_beams: Optional[int] = None,
         temperature: Optional[float] = None,
-        top_k: Optional[int] = None, # top-k = 10 暂时也不知道是什么东西
-        top_p: Optional[float] = None, # top-p = 50
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
         typical_p: Optional[float] = None,
         repetition_penalty: Optional[float] = None,
         bad_words_ids: Optional[Iterable[int]] = None,
@@ -1918,20 +1958,20 @@ class MSAT5(T5PreTrainedModel):
     ) :
         
         # 1. Set generation parameters if not already defined
-        bos_token_id = bos_token_id if bos_token_id is not None else self.config.bos_token_id # 起始符 begin of sequence
-        num_beams = num_beams if num_beams is not None else self.config.num_beams # 集束的数量
-        length_penalty = length_penalty if length_penalty is not None else self.config.length_penalty # 长度惩罚 越大倾向于生成更短的内容
-        early_stopping = early_stopping if early_stopping is not None else self.config.early_stopping # 遇到eos停止生成
-        num_beam_groups = num_beam_groups if num_beam_groups is not None else self.config.num_beam_groups # 集束群组的数量
-        do_sample = do_sample if do_sample is not None else self.config.do_sample # 做采样
+        bos_token_id = bos_token_id if bos_token_id is not None else self.config.bos_token_id
+        num_beams = num_beams if num_beams is not None else self.config.num_beams
+        length_penalty = length_penalty if length_penalty is not None else self.config.length_penalty
+        early_stopping = early_stopping if early_stopping is not None else self.config.early_stopping
+        num_beam_groups = num_beam_groups if num_beam_groups is not None else self.config.num_beam_groups
+        do_sample = do_sample if do_sample is not None else self.config.do_sample
         num_return_sequences = (
-            num_return_sequences if num_return_sequences is not None else self.config.num_return_sequences # 生成的序列数量
+            num_return_sequences if num_return_sequences is not None else self.config.num_return_sequences
         )
 
-        pad_token_id = pad_token_id if pad_token_id is not None else self.config.pad_token_id # 填充字符
-        eos_token_id = eos_token_id if eos_token_id is not None else self.config.eos_token_id # 结束字符
+        pad_token_id = pad_token_id if pad_token_id is not None else self.config.pad_token_id
+        eos_token_id = eos_token_id if eos_token_id is not None else self.config.eos_token_id
 
-        if eos_token_id is None and hasattr(self.config, "decoder"): # config里面是否有decoder这个属性
+        if eos_token_id is None and hasattr(self.config, "decoder"):
             eos_token_id = self.config.decoder.eos_token_id
 
         if pad_token_id is None and eos_token_id is not None:
@@ -1939,13 +1979,13 @@ class MSAT5(T5PreTrainedModel):
             logger.warning(f"Setting `pad_token_id` to `eos_token_id`:{eos_token_id} for open-end generation.")
             pad_token_id = eos_token_id
 
-        output_scores = output_scores if output_scores is not None else self.config.output_scores # 词表分数 存疑？
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions # attention weights bool类型的
+        output_scores = output_scores if output_scores is not None else self.config.output_scores
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states # 是否要返回隐藏层状态
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
         return_dict_in_generate = (
-            return_dict_in_generate if return_dict_in_generate is not None else self.config.return_dict_in_generate # 作为对象返回还是作为字典返回
+            return_dict_in_generate if return_dict_in_generate is not None else self.config.return_dict_in_generate
         )
 
         # 2. Define model inputs
@@ -1953,32 +1993,32 @@ class MSAT5(T5PreTrainedModel):
         # model_input_name is defined if model-specific keyword input is passed
         # otherwise model_input_name is None
         # all model-specific keyword inputs are removed from `model_kwargs`
-        inputs_tensor, model_input_name, model_kwargs = self._prepare_model_inputs(inputs, bos_token_id, model_kwargs) # 把input, bos, 填充参数整合为模型需要的类型
+        inputs_tensor, model_input_name, model_kwargs = self._prepare_model_inputs(inputs, bos_token_id, model_kwargs)
         batch_size = inputs_tensor.shape[0]
 
         # 3. Define other model kwargs
-        model_kwargs["output_attentions"] = output_attentions # 从额外的输入(dict)中取出需要的内容
+        model_kwargs["output_attentions"] = output_attentions
         model_kwargs["output_hidden_states"] = output_hidden_states
-        model_kwargs["use_cache"] = use_cache # 是否使用attention的状态cache 而不是模型的前向传播中间值是否保留 O(n2)->O(n)
+        model_kwargs["use_cache"] = use_cache
 
-        accepts_attention_mask = "attention_mask" in set(inspect.signature(self.forward).parameters.keys()) # 检查模型是否接受attention_mask
+        accepts_attention_mask = "attention_mask" in set(inspect.signature(self.forward).parameters.keys())
         requires_attention_mask = "encoder_outputs" not in model_kwargs
 
         if model_kwargs.get("attention_mask", None) is None and requires_attention_mask and accepts_attention_mask:
             model_kwargs["attention_mask"] = self._prepare_attention_mask_for_generation(
-                inputs_tensor, pad_token_id, eos_token_id # attention mask 全1矩阵 形状与input相同
+                inputs_tensor, pad_token_id, eos_token_id
             )
 
         if self.config.is_encoder_decoder and "encoder_outputs" not in model_kwargs:
             # if model is encoder decoder encoder_outputs are created
             # and added to `model_kwargs`
-            model_kwargs = self._prepare_encoder_decoder_kwargs_for_generation(
-                inputs_tensor, model_kwargs, model_input_name # 将encoder的状态转为decoder的attention参数 (encoder和decoder需要做cross attention)
+            model_kwargs = self.prepare_encoder_decoder_kwargs_for_MSA_generation(
+                inputs_tensor, esm, model_kwargs, model_input_name
             )
 
         # 4. Prepare `input_ids` which will be used for auto-regressive generation
         if self.config.is_encoder_decoder:
-            input_ids = self._prepare_decoder_MSA_input_ids_for_generation( # 作者自己写的
+            input_ids = self._prepare_decoder_MSA_input_ids_for_generation(
                 batch_size,
                 decoder_start_token_id=decoder_start_token_id,
                 bos_token_id=bos_token_id,
@@ -1990,12 +2030,12 @@ class MSAT5(T5PreTrainedModel):
             # if decoder-only then inputs_tensor has to be `input_ids`
             input_ids = inputs_tensor
 
-        input_ids_seq_length = input_ids.shape[-1] # 得到输入的长度
+        input_ids_seq_length = input_ids.shape[-1]
 
         # 5. Prepare `max_length` depending on other stopping criteria
         # if `max_new_tokens` is passed, but not `max_length` -> set `max_length = max_new_tokens`
         if max_length is None and max_new_tokens is not None:
-            max_length = max_new_tokens + input_ids_seq_length # 不知道
+            max_length = max_new_tokens + input_ids_seq_length
         elif max_length is not None and max_new_tokens is not None:
             # Both are set, this is odd, raise a warning
             warnings.warn(
@@ -2023,21 +2063,21 @@ class MSAT5(T5PreTrainedModel):
 
         # 6. determine generation mode
         is_constraint_gen_mode = constraints is not None or force_words_ids is not None
-        is_greedy_gen_mode = ( # 贪心搜索：直接选取输出最大概率的词 直到出现eos
+        is_greedy_gen_mode = (
             (num_beams == 1) and (num_beam_groups == 1) and do_sample is False and not is_constraint_gen_mode
         )
-        is_sample_gen_mode = ( # 采样生成模块 True
+        is_sample_gen_mode = (
             (num_beams == 1) and (num_beam_groups == 1) and do_sample is True and not is_constraint_gen_mode
         )
-        is_beam_gen_mode = ( # 集束生成
+        is_beam_gen_mode = (
             (num_beams > 1) and (num_beam_groups == 1) and do_sample is False and not is_constraint_gen_mode
         )
-        is_beam_sample_gen_mode = ( # 集束采样生成 一般会把前两种方法结合起来用
+        is_beam_sample_gen_mode = (
             (num_beams > 1) and (num_beam_groups == 1) and do_sample is True and not is_constraint_gen_mode
         )
-        is_group_beam_gen_mode = (num_beams > 1) and (num_beam_groups > 1) and not is_constraint_gen_mode # 集束群组生成 论文中提到的方法
+        is_group_beam_gen_mode = (num_beams > 1) and (num_beam_groups > 1) and not is_constraint_gen_mode
 
-        if num_beam_groups > num_beams: # 一定要确保集束群组<=集束个数
+        if num_beam_groups > num_beams:
             raise ValueError("`num_beam_groups` has to be smaller or equal to `num_beams`")
         if is_group_beam_gen_mode and do_sample is True:
             raise ValueError(
@@ -2045,7 +2085,7 @@ class MSAT5(T5PreTrainedModel):
             )
 
         # 7. prepare distribution pre_processing samplers
-        logits_processor = self._get_logits_processor( # 重点在这里
+        logits_processor = self._get_logits_processor(
             repetition_penalty=repetition_penalty,
             no_repeat_ngram_size=no_repeat_ngram_size,
             encoder_no_repeat_ngram_size=encoder_no_repeat_ngram_size,
@@ -2068,7 +2108,7 @@ class MSAT5(T5PreTrainedModel):
         )
 
         # 8. prepare stopping criteria
-        stopping_criteria = self._get_stopping_criteria( # 停止生成的范式 生成太长/遇到了停止符
+        stopping_criteria = self._get_stopping_criteria(
             max_length=max_length, max_time=max_time,stopping_criteria=stopping_criteria
         )
 
@@ -2427,7 +2467,7 @@ class MSAT5(T5PreTrainedModel):
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             # forward pass to get next token
-            outputs = self( # forward过程得到output
+            outputs = self(
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
