@@ -245,6 +245,7 @@ class MSABatchConverter(BatchConverter):
         
         batch_size = len(raw_batch)
         num_alignments = labels.shape[1]
+        # num_alignments = 1
         max_seqlen = labels.shape[-1] - int(self.alphabet.prepend_bos) - int(self.alphabet.append_eos)
 
         tokens = torch.empty(
@@ -352,6 +353,64 @@ class MSADataSet(Dataset):
 
     def __getitem__(self, index):
         return self.data[index]
+
+import os
+import pickle
+import random
+from torch.utils.data import Dataset
+from functools import lru_cache
+
+class MSADataSet_(Dataset):
+    def __init__(self, data_args, num_alignments, threshold):
+        self.data_args = data_args
+        self.num_alignments = num_alignments
+        self.threshold = threshold
+        self.file_paths = self._get_file_paths([
+            '/uac/gds/hqcao23/hqcao/openfold/esm_msa/',
+            '/uac/gds/hqcao23/hqcao/openfold/uniclust_emb/'
+        ])
+
+    def _get_file_paths(self, data_paths):
+        file_paths = []
+        for path in data_paths:
+            if os.path.isdir(path):
+                file_paths.extend([os.path.join(path, f) for f in os.listdir(path) if f.endswith('.pkl')])
+            else:
+                file_paths.append(path)
+        return file_paths
+
+    def __len__(self):
+        return len(self.file_paths)
+
+    @lru_cache(maxsize=100)
+    def _load_file(self, file_path):
+        with open(file_path, "rb") as f:
+            return pickle.load(f)
+
+    def __getitem__(self, index):
+        while True:
+            file_path = self.file_paths[index]
+            try:
+                data = self._load_file(file_path)
+                item = self._get_valid_item(data)
+                if item:
+                    item['msa'] = random.sample(item['msa'], min(self.num_alignments, len(item['msa'])))
+                    return item
+            except Exception as e:
+                print(f"Error processing {file_path}: {e}")
+            index = (index + 1) % len(self.file_paths)
+
+    def _get_valid_item(self, data):
+        if isinstance(data, list):
+            valid_items = [item for item in data if len(item['seq']) <= self.threshold]
+            return random.choice(valid_items) if valid_items else None
+        elif isinstance(data, dict) and len(data['seq']) <= self.threshold:
+            return data
+        return None
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
 
 class MSAInferenceDataSet(Dataset):
     def __init__(self, args):

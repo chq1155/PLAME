@@ -51,8 +51,7 @@ warnings.filterwarnings("ignore")
 os.environ["WANDB_PROJECT"] = "ProteinESMFold"
 os.environ["WANDB_LOG_MODEL"] = "checkpoint"
 os.environ["WANDB_SILENT"] = "true"
-# wandb.login(key='ff36dda227a04150a0cacc715b2460176efe3144')
-wandb.login(key="e2b57869f986ba13028a1bafee8735bdeac245f3")
+wandb.login(key='ff36dda227a04150a0cacc715b2460176efe3144')
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.16.0.dev0")
@@ -257,6 +256,11 @@ class GradientClippingTrainer(Trainer):
 
         return self.optimizer
 
+def print_model_parameters(model):
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params_in_millions = total_params / 1e6
+    print(f"Total trainable parameters: {total_params_in_millions:.2f}M")
+
 def main():
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
 
@@ -272,9 +276,7 @@ def main():
     training_args.fsdp = "full_shard auto_wrap"
     training_args.fsdp_transformer_layer_cls_to_wrap = "T5Block"
     training_args.fsdp_min_num_params = 0
-    training_args.max_grad_norm = 1.0
-    training_args.clip_grad_norm = 1.0
-    training_args.safe_serialization = False
+    
     # Setup logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -321,25 +323,21 @@ def main():
     data_args.tokenizer = tokenizer
     train_dataset = MSADataSet_(data_args, num_alignments=data_args.num_alignments, threshold=data_args.threshold)
 
-    valid_ratio = 0.05
-    test_ratio = 0.05
+    valid_ratio = 0.1
+    test_ratio = 0.1
     valid_size = int(valid_ratio * len(train_dataset))
     test_size = int(test_ratio * len(train_dataset))
     train_size = len(train_dataset) - valid_size - test_size
     train_dataset, valid_dataset, test_dataset = random_split(train_dataset, [train_size, valid_size, test_size]) # [batch, num_sequence, seq_length, hidden_dim]
-    # test_list = []
-    # for i in tqdm(range(len(test_dataset))):
-    #     test_sample_path = get_file_path_wrapper(test_dataset, i)
-    #     test_list.append(test_sample_path)
-    # with open('test_list.json', 'w') as f:
-    #     json.dump(test_list, f)
-        
+    valid_dataset = train_dataset
+
     config = T5Config.from_pretrained('./config')
 
     config.seq_per_msa = data_args.num_alignments
     config.vocab_size = len(tokenizer)
     model = MSA_AUGMENTOR(config=config)
     model.gradient_checkpointing_enable()
+    print_model_parameters(model)
     n_params = sum(dict((p.data_ptr(), p.numel()) for p in model.parameters()).values())
     logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
     model.resize_token_embeddings(len(tokenizer))
@@ -348,7 +346,7 @@ def main():
     if model.config.decoder_start_token_id is None:
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
 
-    trainer = GradientClippingTrainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,

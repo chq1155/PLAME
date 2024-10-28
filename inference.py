@@ -29,13 +29,13 @@ def msa_generate(args, model, dataset, msa_collator, tokenizer):
     Generate msa for given dataset
     """
     with torch.no_grad():
-        output_dir = os.path.join(args.output_dir, args.mode, f"A{args.augmentation_times}T{args.trials_times}R{args.repetition_penalty}")
+        output_dir = os.path.join(args.output_dir, args.mode, f"A{args.augmentation_times}T{args.trials_times}R{args.repetition_penalty}Temp{args.temperature}")
         args_dict = vars(args)
         os.makedirs(output_dir,exist_ok=True)
         with open(os.path.join(output_dir,'params.json'), 'w') as f:
             json.dump(args_dict, f, indent=4)
         logger.info('generate src files-num: {}'.format(len(dataset)))
-       
+      
         for protein_data in dataset:
             infer_time_avg = 0.0
             
@@ -46,6 +46,8 @@ def msa_generate(args, model, dataset, msa_collator, tokenizer):
             esm, src_ids = msa_collator.infer_batch_convert(input_ids, args.num_alignments)
             esm = esm.to(args.device)
             src_ids = src_ids.to(args.device)
+            bad_words = ["-"]
+            bad_words_ids = [[tokenizer.get_idx(word) for word in bad_words]]
             
             _, original_seq_num, original_seq_len = src_ids.size()
             for trial in range(args.trials_times):
@@ -57,8 +59,10 @@ def msa_generate(args, model, dataset, msa_collator, tokenizer):
                     logger.info(f'File {a3m_file_name} already exists, skip')
                     continue
                 start = time.time()
+                
                 output = model.generate(src_ids, esm, do_sample=True, top_k=5, top_p=0.95, repetition_penalty=args.repetition_penalty, \
-                                    max_length=original_seq_len+1, gen_seq_num=original_seq_num*args.augmentation_times) # TODO
+                                    max_length=original_seq_len+1, gen_seq_num=original_seq_num*args.augmentation_times,
+                                    bad_words_ids=bad_words_ids) # TODO
                 end = time.time()
                 infer_time_avg += (end - start) / args.trials_times
                 generate_seq = [tokenizer.decode(seq_token, skip_special_tokens=True).replace(' ','') for seq_token in output[0]]

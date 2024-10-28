@@ -28,10 +28,10 @@ from torch.nn import CrossEntropyLoss
 from torch.utils.checkpoint import checkpoint
 from dataclasses import dataclass
 from transformers import LogitsProcessorList,StoppingCriteriaList,T5Config
-# from transformers.generation.beam_constraints import Constraint, DisjunctiveConstraint, PhrasalConstraint
-# from transformers.generation.beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
-from transformers.generation_beam_constraints import Constraint, DisjunctiveConstraint, PhrasalConstraint
-from transformers.generation_beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
+from transformers.generation.beam_constraints import Constraint, DisjunctiveConstraint, PhrasalConstraint
+from transformers.generation.beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
+# from transformers.generation_beam_constraints import Constraint, DisjunctiveConstraint, PhrasalConstraint
+# from transformers.generation_beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
 from transformers.activations import ACT2FN
 from transformers.file_utils import (
     DUMMY_INPUTS,
@@ -47,15 +47,7 @@ from transformers.modeling_outputs import (
 from transformers.modeling_utils import PreTrainedModel, find_pruneable_heads_and_indices, prune_linear_layer
 from transformers.utils import logging,ModelOutput
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
-# from transformers.generation.stopping_criteria import (
-#     MaxLengthCriteria,
-#     MaxTimeCriteria,
-#     StoppingCriteria,
-#     StoppingCriteriaList,
-#     validate_stopping_criteria,
-# )
-
-from transformers.generation_stopping_criteria import (
+from transformers.generation.stopping_criteria import (
     MaxLengthCriteria,
     MaxTimeCriteria,
     StoppingCriteria,
@@ -63,25 +55,15 @@ from transformers.generation_stopping_criteria import (
     validate_stopping_criteria,
 )
 
-# from transformers.generation.logits_process import (
-#     EncoderNoRepeatNGramLogitsProcessor,
-#     ExponentialDecayLengthPenalty,
-#     ForcedBOSTokenLogitsProcessor,
-#     ForcedEOSTokenLogitsProcessor,
-#     HammingDiversityLogitsProcessor,
-#     InfNanRemoveLogitsProcessor,
-#     LogitsProcessorList,
-#     MinLengthLogitsProcessor,
-#     NoBadWordsLogitsProcessor,
-#     NoRepeatNGramLogitsProcessor,
-#     PrefixConstrainedLogitsProcessor,
-#     RepetitionPenaltyLogitsProcessor,
-#     TemperatureLogitsWarper,
-#     TopKLogitsWarper,
-#     TopPLogitsWarper,
-#     TypicalLogitsWarper,
+# from transformers.generation_stopping_criteria import (
+#     MaxLengthCriteria,
+#     MaxTimeCriteria,
+#     StoppingCriteria,
+#     StoppingCriteriaList,
+#     validate_stopping_criteria,
 # )
-from transformers.generation_logits_process import (
+
+from transformers.generation.logits_process import (
     EncoderNoRepeatNGramLogitsProcessor,
     ExponentialDecayLengthPenalty,
     ForcedBOSTokenLogitsProcessor,
@@ -99,6 +81,24 @@ from transformers.generation_logits_process import (
     TopPLogitsWarper,
     TypicalLogitsWarper,
 )
+# from transformers.generation_logits_process import (
+#     EncoderNoRepeatNGramLogitsProcessor,
+#     ExponentialDecayLengthPenalty,
+#     ForcedBOSTokenLogitsProcessor,
+#     ForcedEOSTokenLogitsProcessor,
+#     HammingDiversityLogitsProcessor,
+#     InfNanRemoveLogitsProcessor,
+#     LogitsProcessorList,
+#     MinLengthLogitsProcessor,
+#     NoBadWordsLogitsProcessor,
+#     NoRepeatNGramLogitsProcessor,
+#     PrefixConstrainedLogitsProcessor,
+#     RepetitionPenaltyLogitsProcessor,
+#     TemperatureLogitsWarper,
+#     TopKLogitsWarper,
+#     TopPLogitsWarper,
+#     TypicalLogitsWarper,
+# )
 
 
 logger = logging.get_logger(__name__)
@@ -119,7 +119,6 @@ T5_PRETRAINED_MODEL_ARCHIVE_LIST = [
     "t5-11b",
     # See all T5 models at https://huggingface.co/models?filter=t5
 ]
-
 
 ####################################################
 # This is a conversion method from TF 1.0 to PyTorch
@@ -1542,7 +1541,37 @@ If you do not want to use any `decoder_head_mask` now, please set `decoder_head_
 num_heads)`. """
 
 
+class MSANoBadWordsLogitsProcessor(LogitsProcessor):
+    def __init__(self, bad_words_ids: List[List[int]], eos_token_id: int):
+        self.bad_word_ids = bad_words_ids
+        self.eos_token_id = eos_token_id
 
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        if len(self.bad_word_ids) == 0:
+            return scores
+
+        batch_size, num_alignments, vocab_size = scores.shape
+        banned_tokens = self._calc_banned_bad_words_ids(input_ids)
+
+        for i, banned_tokens_batch in enumerate(banned_tokens):
+            for align, banned_tokens_align in enumerate(banned_tokens_batch):
+                if banned_tokens_align:  # Only process if there are banned tokens for this alignment
+                    scores[i, align, banned_tokens_align] = -float("inf")
+
+        return scores
+
+    def _calc_banned_bad_words_ids(self, input_ids: torch.LongTensor) -> List[List[List[int]]]:
+        banned_tokens = []
+        for batch_id, batch_seq in enumerate(input_ids):
+            banned_tokens_batch = []
+            for align_seq in batch_seq:
+                banned_tokens_seq = set()
+                for word_seq in self.bad_word_ids:
+                    if len(word_seq) <= len(align_seq) and word_seq == align_seq[-len(word_seq):].tolist():
+                        banned_tokens_seq.update(word_seq)
+                banned_tokens_batch.append(list(banned_tokens_seq))
+            banned_tokens.append(banned_tokens_batch)
+        return banned_tokens
 
 class MSAT5(T5PreTrainedModel):
     _keys_to_ignore_on_load_missing = [
@@ -2832,8 +2861,10 @@ class MSAT5(T5PreTrainedModel):
                 raise ValueError(
                     "It's impossible to use `encoder_no_repeat_ngram_size` with decoder-only architecture"
                 )
+        # if bad_words_ids is not None:
+        #     processors.append(NoBadWordsLogitsProcessor(bad_words_ids, eos_token_id))
         if bad_words_ids is not None:
-            processors.append(NoBadWordsLogitsProcessor(bad_words_ids, eos_token_id))
+            processors.append(MSANoBadWordsLogitsProcessor(bad_words_ids, eos_token_id))
         if min_length is not None and eos_token_id is not None and min_length > 0:
             processors.append(MSAMinLengthLogitsProcessor(min_length, eos_token_id))
         if prefix_allowed_tokens_fn is not None:
