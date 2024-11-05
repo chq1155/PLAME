@@ -28,10 +28,10 @@ from torch.nn import CrossEntropyLoss
 from torch.utils.checkpoint import checkpoint
 from dataclasses import dataclass
 from transformers import LogitsProcessorList,StoppingCriteriaList,T5Config
-from transformers.generation.beam_constraints import Constraint, DisjunctiveConstraint, PhrasalConstraint
-from transformers.generation.beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
-# from transformers.generation_beam_constraints import Constraint, DisjunctiveConstraint, PhrasalConstraint
-# from transformers.generation_beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
+# from transformers.generation.beam_constraints import Constraint, DisjunctiveConstraint, PhrasalConstraint
+# from transformers.generation.beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
+from transformers.generation_beam_constraints import Constraint, DisjunctiveConstraint, PhrasalConstraint
+from transformers.generation_beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
 from transformers.activations import ACT2FN
 from transformers.file_utils import (
     DUMMY_INPUTS,
@@ -47,15 +47,7 @@ from transformers.modeling_outputs import (
 from transformers.modeling_utils import PreTrainedModel, find_pruneable_heads_and_indices, prune_linear_layer
 from transformers.utils import logging,ModelOutput
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
-from transformers.generation.stopping_criteria import (
-    MaxLengthCriteria,
-    MaxTimeCriteria,
-    StoppingCriteria,
-    StoppingCriteriaList,
-    validate_stopping_criteria,
-)
-
-# from transformers.generation_stopping_criteria import (
+# from transformers.generation.stopping_criteria import (
 #     MaxLengthCriteria,
 #     MaxTimeCriteria,
 #     StoppingCriteria,
@@ -63,25 +55,15 @@ from transformers.generation.stopping_criteria import (
 #     validate_stopping_criteria,
 # )
 
-from transformers.generation.logits_process import (
-    EncoderNoRepeatNGramLogitsProcessor,
-    ExponentialDecayLengthPenalty,
-    ForcedBOSTokenLogitsProcessor,
-    ForcedEOSTokenLogitsProcessor,
-    HammingDiversityLogitsProcessor,
-    InfNanRemoveLogitsProcessor,
-    LogitsProcessorList,
-    MinLengthLogitsProcessor,
-    NoBadWordsLogitsProcessor,
-    NoRepeatNGramLogitsProcessor,
-    PrefixConstrainedLogitsProcessor,
-    RepetitionPenaltyLogitsProcessor,
-    TemperatureLogitsWarper,
-    TopKLogitsWarper,
-    TopPLogitsWarper,
-    TypicalLogitsWarper,
+from transformers.generation_stopping_criteria import (
+    MaxLengthCriteria,
+    MaxTimeCriteria,
+    StoppingCriteria,
+    StoppingCriteriaList,
+    validate_stopping_criteria,
 )
-# from transformers.generation_logits_process import (
+
+# from transformers.generation.logits_process import (
 #     EncoderNoRepeatNGramLogitsProcessor,
 #     ExponentialDecayLengthPenalty,
 #     ForcedBOSTokenLogitsProcessor,
@@ -99,6 +81,24 @@ from transformers.generation.logits_process import (
 #     TopPLogitsWarper,
 #     TypicalLogitsWarper,
 # )
+from transformers.generation_logits_process import (
+    EncoderNoRepeatNGramLogitsProcessor,
+    ExponentialDecayLengthPenalty,
+    ForcedBOSTokenLogitsProcessor,
+    ForcedEOSTokenLogitsProcessor,
+    HammingDiversityLogitsProcessor,
+    InfNanRemoveLogitsProcessor,
+    LogitsProcessorList,
+    MinLengthLogitsProcessor,
+    NoBadWordsLogitsProcessor,
+    NoRepeatNGramLogitsProcessor,
+    PrefixConstrainedLogitsProcessor,
+    RepetitionPenaltyLogitsProcessor,
+    TemperatureLogitsWarper,
+    TopKLogitsWarper,
+    TopPLogitsWarper,
+    TypicalLogitsWarper,
+)
 
 
 logger = logging.get_logger(__name__)

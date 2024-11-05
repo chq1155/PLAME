@@ -1,4 +1,3 @@
-
 import json
 from transformers import T5Config
 from MSA import MSAT5
@@ -29,40 +28,35 @@ def msa_generate(args, model, dataset, msa_collator, tokenizer):
     Generate msa for given dataset
     """
     with torch.no_grad():
-        output_dir = os.path.join(args.output_dir, args.mode, f"A{args.augmentation_times}T{args.trials_times}R{args.repetition_penalty}Temp{args.temperature}")
+        output_dir = os.path.join(args.output_dir, args.mode, f"A{args.augmentation_times}T{args.trials_times}R{args.repetition_penalty}")
         args_dict = vars(args)
-        os.makedirs(output_dir,exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
         with open(os.path.join(output_dir,'params.json'), 'w') as f:
             json.dump(args_dict, f, indent=4)
         logger.info('generate src files-num: {}'.format(len(dataset)))
-      
+        
         for protein_data in dataset:
             infer_time_avg = 0.0
             
-            msa_name = protein_data['name']
+            msa_name = os.path.basename(protein_data['name']).split('.')[0]
             original_seq = protein_data['seq']
             esm = protein_data['emb']
             input_ids = [original_seq, esm]
             esm, src_ids = msa_collator.infer_batch_convert(input_ids, args.num_alignments)
             esm = esm.to(args.device)
             src_ids = src_ids.to(args.device)
-            # bad_words = ["-"]
-            # bad_words_ids = [[tokenizer.get_idx(word) for word in bad_words]]
             
             _, original_seq_num, original_seq_len = src_ids.size()
             for trial in range(args.trials_times):
-                msa_name = os.path.basename(msa_name).split('.')[0]
-                msa_output_dir = os.path.join(output_dir,msa_name)
+                msa_output_dir = os.path.join(output_dir, msa_name)
                 os.makedirs(msa_output_dir,exist_ok=True)
                 a3m_file_name = os.path.join(msa_output_dir,f"generation_{trial}.a3m")
                 if os.path.exists(a3m_file_name):
                     logger.info(f'File {a3m_file_name} already exists, skip')
                     continue
                 start = time.time()
-                
                 output = model.generate(src_ids, esm, do_sample=True, top_k=5, top_p=0.95, repetition_penalty=args.repetition_penalty, \
-                                    max_length=original_seq_len+1, gen_seq_num=original_seq_num*args.augmentation_times,)
-                                    # bad_words_ids=bad_words_ids) # TODO
+                                    max_length=original_seq_len+1, gen_seq_num=original_seq_num*args.augmentation_times) # TODO
                 end = time.time()
                 infer_time_avg += (end - start) / args.trials_times
                 generate_seq = [tokenizer.decode(seq_token, skip_special_tokens=True).replace(' ','') for seq_token in output[0]]
@@ -121,8 +115,7 @@ def parsing_arguments():
     parser.add_argument('--mode', type=str, choices=['orphan','artificial'], required=True, help="whether task is real world orphan enhancement or artificial enhancement")
     parser.add_argument('--repetition_penalty', type=float, default=1.2, help="repetition penalty for generation")
     parser.add_argument('-a','--augmentation_times', type=int, default=1, help="times of generated quality compared to original msa x1 x3 x5")
-    parser.add_argument('-t', '--trials_times', type=int, default=1)    
-    # More advanced generation params
+    parser.add_argument('-t', '--trials_times', type=int, default=5)    
     parser.add_argument('--do_sample', type=bool, default=True, help="Whether or not to use sampling ; use greedy decoding otherwise.")
     # parser.add_argument('--num_beams', type=int, default=36, help="Number of beams for beam search. 1 means no beam search.")
     # parser.add_argument('--num_beam_groups', type=int, default=6, help="Number of groups to divide num_beams into in order to ensure diversity among different groups of beams.")

@@ -51,7 +51,7 @@ warnings.filterwarnings("ignore")
 os.environ["WANDB_PROJECT"] = "ProteinESMFold"
 os.environ["WANDB_LOG_MODEL"] = "checkpoint"
 os.environ["WANDB_SILENT"] = "true"
-wandb.login(key='ff36dda227a04150a0cacc715b2460176efe3144')
+wandb.login(key='e2b57869f986ba13028a1bafee8735bdeac245f3')
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.16.0.dev0")
