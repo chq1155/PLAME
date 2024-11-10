@@ -28,7 +28,7 @@ def msa_generate(args, model, dataset, msa_collator, tokenizer):
     Generate msa for given dataset
     """
     with torch.no_grad():
-        output_dir = os.path.join(args.output_dir, args.mode, f"A{args.augmentation_times}T{args.trials_times}R{args.repetition_penalty}")
+        output_dir = os.path.join(args.output_dir, args.mode, f"A{args.augmentation_times}T{args.trials_times}R{args.repetition_penalty}T{args.temperature}P{args.top_p}")
         args_dict = vars(args)
         os.makedirs(output_dir, exist_ok=True)
         with open(os.path.join(output_dir,'params.json'), 'w') as f:

@@ -306,16 +306,46 @@ class MSABatchConverter(BatchConverter):
         seq_tokens = super().seq_convert(num_alignments, esm)
         tokens[0, : seq_tokens.size(0), : seq_tokens.size(1)] = seq_tokens
         esm_embeddings[0, : esm_tokens.size(0), : esm_tokens.size(1)] = esm_tokens
+
+        print(f"token and esm emb shape: {tokens.shape}, {esm_embeddings.shape}")
         
         return esm_embeddings, tokens
+    
+    def to_bf16(self, tensor):
+        return tensor.to(torch.bfloat16) if isinstance(tensor, torch.Tensor) else tensor
+
+    # def __call__(self, batch):
+    #     labels = self.msa_batch_convert([example["msa"] for example in batch])
+    #     esm_emb, input_ids = self.esm_batch_convert([example["emb"] for example in batch], labels)
+    #     labels[labels==self.alphabet.padding_idx]=-100
+    #     attention_mask = input_ids.ne(self.alphabet.padding_idx).type_as(input_ids)
+    #     decoder_attention_mask = labels.ne(self.alphabet.padding_idx).type_as(input_ids)
+    #     print(f"input_ids type: {input_ids.dtype}")
+    #     return {'input_ids':input_ids, 'labels':labels, "attention_mask":attention_mask, "decoder_attention_mask":decoder_attention_mask, "esm": esm_emb}
 
     def __call__(self, batch):
         labels = self.msa_batch_convert([example["msa"] for example in batch])
         esm_emb, input_ids = self.esm_batch_convert([example["emb"] for example in batch], labels)
-        labels[labels==self.alphabet.padding_idx]=-100
+        
+        labels[labels==self.alphabet.padding_idx] = -100
         attention_mask = input_ids.ne(self.alphabet.padding_idx).type_as(input_ids)
         decoder_attention_mask = labels.ne(self.alphabet.padding_idx).type_as(input_ids)
-        return {'input_ids':input_ids, 'labels':labels, "attention_mask":attention_mask, "decoder_attention_mask":decoder_attention_mask, "esm": esm_emb}
+        
+        # Convert all tensors to bfloat16 except input_ids
+        outputs = {
+            'input_ids': input_ids.long(),  # 确保 input_ids 为 long 类型
+            'labels': labels,
+            "attention_mask": attention_mask,
+            "decoder_attention_mask": decoder_attention_mask,
+            "esm": esm_emb
+        }
+        
+        # 转换除 input_ids 外的所有张量为 bfloat16
+        outputs = {k: self.to_bf16(v) if k != 'input_ids' else v 
+                for k, v in outputs.items()}
+        
+        print(f"input_ids type: {outputs['input_ids'].dtype}")
+        return outputs
 
 class MSADataSet(Dataset):
     def __init__(self, data_args, num_alignments, threshold):

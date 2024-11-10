@@ -46,6 +46,8 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 
+import torch
+
 warnings.filterwarnings("ignore")
 # os.environ["WANDB_DISABLED"] = "true"
 os.environ["WANDB_PROJECT"] = "ProteinESMFold"
@@ -338,12 +340,18 @@ def main():
 
     config.seq_per_msa = data_args.num_alignments
     config.vocab_size = len(tokenizer)
+    config.torch_dtype = torch.bfloat16
     model = MSA_AUGMENTOR(config=config)
     model.gradient_checkpointing_enable()
     n_params = sum(dict((p.data_ptr(), p.numel()) for p in model.parameters()).values())
     logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
     model.resize_token_embeddings(len(tokenizer))
     msadata_collator = MSABatchConverter(tokenizer)
+
+    # for param in model.parameters():
+    #     print(param.dtype)
+    model = model.to(torch.bfloat16)
+
     
     if model.config.decoder_start_token_id is None:
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")

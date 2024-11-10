@@ -1180,6 +1180,10 @@ class T5Stack(T5PreTrainedModel):
         return_dict=None,
         esm=None,
     ):
+        print("Start checking input...")
+        print("input_ids: ", input_ids is None)
+        print("inputs_embeds shape: ", inputs_embeds is None)
+        print("esm shape: ", esm is None)
      
         # Model parallel
         if self.model_parallel:
@@ -1210,15 +1214,35 @@ class T5Stack(T5PreTrainedModel):
             raise ValueError(f"You have to specify either {err_msg_prefix}input_ids or {err_msg_prefix}inputs_embeds")
 
         if inputs_embeds is None and esm is None:
+            # chq: we need to keep this when we use this module as decoder.
             assert self.embed_tokens is not None, "You have to initialize the model with valid token embeddings"
-            inputs_embeds = self.embed_tokens(input_ids)
+            inputs_embeds = self.embed_tokens(input_ids.long())
             
-        elif inputs_embeds is None and esm is not None:
+        if input_ids is None and inputs_embeds is None and esm is not None:
             # TODO
+            # print("Entering loop1")
             expand = input_ids.unsqueeze(-1).expand(-1, -1, -1, esm.shape[-1]).clone()
             expand[:, :, :-1, :] = esm.unsqueeze(1)
             
             inputs_embeds = self.esm_tokens(expand)
+
+        elif input_ids is not None and inputs_embeds is None and esm is not None:
+            # print("Entering loop2")
+            # chq_edit
+            inputs_embeds = self.embed_tokens(input_ids.long()) # only support torch.long as input 
+
+            expand = input_ids.unsqueeze(-1).expand(-1, -1, -1, esm.shape[-1]).clone()
+            expand[:, :, :-1, :] = esm.unsqueeze(1)
+            # print(f"expand dtype: {expand.dtype}")
+            inputs_embeds_esm = self.esm_tokens(expand.bfloat16())
+
+            print(f"inputs_embeds shape: {inputs_embeds.shape}")
+            print(f"inputs_embeds_esm shape: {inputs_embeds_esm.shape}")
+            inputs_embeds = inputs_embeds + inputs_embeds_esm
+            print(f"inputs_embeds_total shape: {inputs_embeds.shape}")
+            # print(inputs_embeds.dtype)
+            # print(inputs_embeds.device)
+
 
         batch_size, num_alignments, seq_length = input_shape
 
@@ -1245,6 +1269,8 @@ class T5Stack(T5PreTrainedModel):
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
+        print(type(inputs_embeds))
+        print(inputs_embeds.device)
         extended_attention_mask = torch.stack([self.get_extended_attention_mask(a, i.shape, inputs_embeds.device) for (a, i) in zip(attention_mask, input_ids)], 0) # [batch,row,1,seq,seq] for decoder ; [batch,row,1,1,seq] for encoder
 
         # If a 2D or 3D attention mask is provided for the cross-attention
@@ -1575,7 +1601,7 @@ class MSA_AUGMENTOR(T5PreTrainedModel):
         super().__init__(config)
         self.model_dim = config.d_model
         # shared embedding matrix 
-        print(config.d_model)
+        # print(config.d_model)
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
         self.esm_input = nn.Linear(1280, config.d_model)
         self.debug=config.debug
@@ -1737,7 +1763,12 @@ class MSA_AUGMENTOR(T5PreTrainedModel):
         #     print('encoder hidden_states shape',hidden_states.shape)
         #     print('\n')
         # Decode
-       
+        print("Start decoding process checking ...")
+        print("decoder_input_ids: ", decoder_input_ids is None)
+        print("decoder_inputs_embeds: ", decoder_inputs_embeds is None)
+        print("decoder_attention_mask: ", decoder_attention_mask is None)
+        print("past_key_values: ", past_key_values is None)
+        print("hidden_states: ", hidden_states is None)
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
@@ -1774,8 +1805,10 @@ class MSA_AUGMENTOR(T5PreTrainedModel):
 
         loss = None
         if labels is not None:
+            # when we use bf16, there would be dtype conflict, so we need to convert the lm_logits and labels to float and long, respectively.
             loss_fct = CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
+            loss = loss_fct(lm_logits.float().view(-1, lm_logits.size(-1)), labels.long().view(-1))
+            # loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
             # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
 
         if not return_dict:

@@ -1,6 +1,13 @@
-python inference.py --do_predict \
-    --checkpoints ./result_config/checkpoint-200000 \
-    --data_path ../benchmark/test \
-    --output_dir ./test_output \
+python inference_old.py --do_predict \
+    --checkpoints ./openfold32/checkpoint-160000 \
+    --data_path /uac/gds/hqcao23/hqcao/openfold/casp14 \
+    --output_dir ./casp14/generation-16w \
     --device cuda:0 \
     --mode artificial \
+    --num_alignments 32 \
+    --augmentation_times 2 \
+    --trials_times 2 \
+    --repetition_penalty 1.0 \
+    --temperature 1.0 \
+    --top_p 0.95 \
+    --device "cuda:3"
