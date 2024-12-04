@@ -251,6 +251,7 @@ class GradientClippingOptimizerWrapper(Optimizer):
         return self.optimizer.step(closure)
     def zero_grad(self, set_to_none: bool = False):
         self.optimizer.zero_grad(set_to_none)
+
 from transformers import Trainer
 class GradientClippingTrainer(Trainer):
     def create_optimizer(self):
@@ -258,6 +259,27 @@ class GradientClippingTrainer(Trainer):
         self.optimizer = GradientClippingOptimizerWrapper(optimizer, self.args.max_grad_norm)
 
         return self.optimizer
+    
+    def compute_loss(self, model, inputs, return_outputs=False):
+        outputs = model(**inputs)
+        
+        # 获取主要loss
+        loss = outputs.loss
+        
+        # 重新计算其他loss以便记录
+        if hasattr(model, 'loss_fct_chq'):
+            lm_logits = outputs.logits
+            labels = inputs['labels']
+            _, weighted_ce, ce_loss, diversity_loss = model.loss_fct_chq(lm_logits, labels)
+            
+            # 记录到日志
+            self.log({
+                "weight_ce_loss": weighted_ce.detach().item(),
+                "ce_loss": ce_loss.detach().item(),
+                "diversity_loss": diversity_loss.detach().item()
+            })
+
+        return (loss, outputs) if return_outputs else loss
 
 def main():
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
@@ -319,6 +341,8 @@ def main():
         logger.info(f"Will train on full trainning dataset!!!")
 
     tokenizer = Alphabet.from_architecture(name="msa_transformer")
+    tks = tokenizer.tok_to_idx
+    print(tks)
 
     data_args.tokenizer = tokenizer
     train_dataset = MSADataSet_(data_args, num_alignments=data_args.num_alignments, threshold=data_args.threshold)

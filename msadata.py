@@ -343,8 +343,8 @@ class MSABatchConverter(BatchConverter):
         # 转换除 input_ids 外的所有张量为 bfloat16
         outputs = {k: self.to_bf16(v) if k != 'input_ids' else v 
                 for k, v in outputs.items()}
-        
-        print(f"input_ids type: {outputs['input_ids'].dtype}")
+        # print(outputs['input_ids'][0][0][:50], outputs['labels'][0][0][:50])
+        # print(f"input_ids type: {outputs['input_ids'].dtype}")
         return outputs
 
 class MSADataSet(Dataset):

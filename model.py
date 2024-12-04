@@ -26,6 +26,7 @@ import torch
 from torch import nn
 from torch.nn import CrossEntropyLoss
 from torch.utils.checkpoint import checkpoint
+import torch.nn.functional as F
 
 from transformers import LogitsProcessorList,StoppingCriteriaList,T5Config
 
@@ -1093,9 +1094,6 @@ class T5Block(nn.Module):
 
         return outputs 
 
-
-
-
 class T5Stack(T5PreTrainedModel):
     def __init__(self, config, embed_tokens=None, esm_tokens=None):
         super().__init__(config)
@@ -1122,6 +1120,12 @@ class T5Stack(T5PreTrainedModel):
         self.model_parallel = False
         self.device_map = None
         self.gradient_checkpointing = False
+
+        self.pool = nn.AdaptiveAvgPool2d((1, 1024))
+        self.weight_head = nn.Sequential(
+            nn.Linear(1024, 1),
+            nn.Sigmoid()
+        )
 
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
@@ -1180,10 +1184,10 @@ class T5Stack(T5PreTrainedModel):
         return_dict=None,
         esm=None,
     ):
-        print("Start checking input...")
-        print("input_ids: ", input_ids is None)
-        print("inputs_embeds shape: ", inputs_embeds is None)
-        print("esm shape: ", esm is None)
+        # print("Start checking input...")
+        # print("input_ids: ", input_ids is None)
+        # print("inputs_embeds shape: ", inputs_embeds is None)
+        # print("esm shape: ", esm is None)
      
         # Model parallel
         if self.model_parallel:
@@ -1231,15 +1235,28 @@ class T5Stack(T5PreTrainedModel):
             # chq_edit
             inputs_embeds = self.embed_tokens(input_ids.long()) # only support torch.long as input 
 
+            bs, num_alignments, seq_length, hidden_size = inputs_embeds.shape
+
+            pool_emb = inputs_embeds.view(-1, seq_length, hidden_size)
+            pool_emb = pool_emb.unsqueeze(1)
+
+            weights_msa = self.weight_head(
+                self.pool(
+                    pool_emb
+                ).squeeze(1).squeeze(1)
+            ).view(bs, num_alignments)
+            weights_msa = weights_msa.unsqueeze(-1).unsqueeze(-1)
+
+            inputs_embeds = inputs_embeds * weights_msa
+
             expand = input_ids.unsqueeze(-1).expand(-1, -1, -1, esm.shape[-1]).clone()
             expand[:, :, :-1, :] = esm.unsqueeze(1)
-            # print(f"expand dtype: {expand.dtype}")
             inputs_embeds_esm = self.esm_tokens(expand.bfloat16())
 
-            print(f"inputs_embeds shape: {inputs_embeds.shape}")
-            print(f"inputs_embeds_esm shape: {inputs_embeds_esm.shape}")
-            inputs_embeds = inputs_embeds + inputs_embeds_esm
-            print(f"inputs_embeds_total shape: {inputs_embeds.shape}")
+            # print(f"inputs_embeds shape: {inputs_embeds.shape}")
+            # print(f"inputs_embeds_esm shape: {inputs_embeds_esm.shape}")
+            inputs_embeds = inputs_embeds + inputs_embeds_esm  # (batch_size, num_alignments, seq_length, hidden_size)
+            # print(f"inputs_embeds_total shape: {inputs_embeds.shape}")
             # print(inputs_embeds.dtype)
             # print(inputs_embeds.device)
 
@@ -1269,8 +1286,8 @@ class T5Stack(T5PreTrainedModel):
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
-        print(type(inputs_embeds))
-        print(inputs_embeds.device)
+        # print(type(inputs_embeds))
+        # print(inputs_embeds.device)
         extended_attention_mask = torch.stack([self.get_extended_attention_mask(a, i.shape, inputs_embeds.device) for (a, i) in zip(attention_mask, input_ids)], 0) # [batch,row,1,seq,seq] for decoder ; [batch,row,1,1,seq] for encoder
 
         # If a 2D or 3D attention mask is provided for the cross-attention
@@ -1585,6 +1602,200 @@ The input argument `head_mask` was split into two arguments `head_mask` and `dec
 If you do not want to use any `decoder_head_mask` now, please set `decoder_head_mask = torch.ones(num_layers,
 num_heads)`. """
 
+"""
+tokenizer idx mapping:
+{'<cls>': 0, '<pad>': 1, '<eos>': 2, '<unk>': 3, 'L': 4, 'A': 5, 'G': 6, 'V': 7, 'S': 8, 
+'E': 9, 'R': 10, 'T': 11, 'I': 12, 'D': 13, 'P': 14, 'K': 15, 'Q': 16, 'N': 17, 'F': 18, 
+'Y': 19, 'M': 20, 'H': 21, 'W': 22, 'C': 23, 'X': 24, 'B': 25, 'U': 26, 'Z': 27, 'O': 28, 
+'.': 29, '-': 30, '<null_1>': 31, '<mask>': 32}
+"""
+class PSSMWeightedCELoss(nn.Module):
+    def __init__(self, padding_idx=-100, pseudocount=1.0):
+        super().__init__()
+        self.padding_idx = padding_idx
+        self.pseudocount = pseudocount
+        
+        # 标准氨基酸字母表
+        self.alphabet = 'ACDEFGHIKLMNPQRSTVWY'
+        self.aa_to_idx = {aa: idx for idx, aa in enumerate(self.alphabet)}
+        
+        # MSA Transformer的token映射
+        self.standard_aa = ['L', 'A', 'G', 'V', 'S', 'E', 'R', 'T', 'I', 'D', 
+                           'P', 'K', 'Q', 'N', 'F', 'Y', 'M', 'H', 'W', 'C', 
+                           'X', 'B', 'U', 'Z', 'O', '-']
+
+        self.token_dict = {
+            '<cls>': 0, '<pad>': 1, '<eos>': 2, '<unk>': 3, 'L': 4, 'A': 5, 'G': 6, 'V': 7, 'S': 8, 
+            'E': 9, 'R': 10, 'T': 11, 'I': 12, 'D': 13, 'P': 14, 'K': 15, 'Q': 16, 'N': 17, 'F': 18, 
+            'Y': 19, 'M': 20, 'H': 21, 'W': 22, 'C': 23, 'X': 24, 'B': 25, 'U': 26, 'Z': 27, 'O': 28, 
+            '.': 29, '-': 30, '<null_1>': 31, '<mask>': 32
+            }
+        
+        # 特殊token
+        self.special_tokens = {
+            "<null_0>": 0,
+            "<pad>": 1,
+            "<eos>": 2,
+            "<unk>": 3,
+            "<cls>": 4,
+            "<mask>": 5,
+            "<sep>": 6
+        }
+        
+        # BLOSUM62背景频率
+        self.background_freq = torch.tensor([
+            0.074, 0.025, 0.054, 0.054, 0.047,  # A, C, D, E, F
+            0.074, 0.026, 0.068, 0.058, 0.099,  # G, H, I, K, L
+            0.025, 0.045, 0.039, 0.034, 0.052,  # M, N, P, Q, R
+            0.057, 0.051, 0.073, 0.013, 0.032   # S, T, V, W, Y
+        ])
+
+    # def token_to_aa(self, token_idx):
+    #     """将token索引转换为氨基酸"""
+    #     # 跳过特殊token
+    #     if token_idx < len(self.special_tokens):
+    #         return None
+        
+    #     # 计算在standard_aa中的索引
+    #     aa_idx = int(token_idx - len(self.special_tokens))
+    #     if aa_idx < len(self.standard_aa):
+    #         return self.standard_aa[aa_idx]
+    #     return None
+
+    def token_to_aa(self, token_idx):
+        """将token索引转换为氨基酸"""
+        # 创建反向映射关系
+        idx_to_aa = {idx: aa for aa, idx in self.token_dict.items()}
+
+        # 如果 token 索引在映射表中，返回对应的氨基酸或特殊符号
+        if token_idx in idx_to_aa:
+            aa = idx_to_aa[token_idx]
+            # 检查是否为特殊 token，如果是则返回 None
+            if aa in self.special_tokens:
+                return None
+            return aa
+        return None
+
+    def tokens_to_sequences(self, tokens_batch):
+        """将token形式的MSA转换为氨基酸序列"""
+        # 创建反向映射关系
+        idx_to_aa = {idx: aa for aa, idx in self.token_dict.items()}
+        
+        batch_size, num_seqs, seq_len = tokens_batch.shape
+        sequences = []
+        
+        for b in range(batch_size):
+            msa_sequences = []
+            for n in range(num_seqs):
+                seq = []
+                for t in tokens_batch[b, n]:
+                    # 获取对应的氨基酸或特殊符号
+                    aa = idx_to_aa.get(t.item(), None)
+                    # 跳过特殊 token
+                    if aa is not None and aa not in self.special_tokens:
+                        seq.append(aa)
+                msa_sequences.append(''.join(seq))
+            sequences.append(msa_sequences)
+            
+        return sequences
+
+    # def tokens_to_sequences(self, tokens_batch):
+    #     """将token形式的MSA转换为氨基酸序列"""
+    #     batch_size, num_seqs, seq_len = tokens_batch.shape
+    #     sequences = []
+        
+    #     for b in range(batch_size):
+    #         msa_sequences = []
+    #         for n in range(num_seqs):
+    #             seq = []
+    #             for t in tokens_batch[b, n]:
+    #                 aa = self.token_to_aa(t.item())
+    #                 if aa is not None:
+    #                     seq.append(aa)
+    #             msa_sequences.append(''.join(seq))
+    #         sequences.append(msa_sequences)
+            
+    #     return sequences
+
+    def calculate_pssm_weights(self, labels, ignore_index=-100):
+        """计算PSSM权重并进行归一化"""
+        batch_size = labels.shape[0]
+        num_alignment = labels.shape[1]
+        seq_len = labels.shape[-1]
+        labels_3d = labels
+        
+        # 创建mask，排除padding位置
+        mask = (labels_3d != ignore_index)
+        
+        weights_batch = []
+        for b in range(batch_size):
+            counts = torch.zeros(seq_len, len(self.alphabet), device=labels.device)
+            
+            for n in range(num_alignment):
+                for pos in range(seq_len):
+                    if mask[b, n, pos]:
+                        token = labels_3d[b, n, pos].item()
+                        aa = self.token_to_aa(token)
+                        if aa in self.aa_to_idx:
+                            counts[pos, self.aa_to_idx[aa]] += 1
+            
+            counts += self.pseudocount
+            
+            freqs = counts / (counts.sum(dim=1, keepdim=True) + 1e-10)
+            
+            entropy = -(freqs * torch.log2(freqs.clamp(min=1e-10))).sum(dim=1)
+            max_entropy = -torch.log2(torch.tensor(1.0/len(self.alphabet), device=labels.device))
+            conservation_scores = 1 - (entropy / max_entropy)
+            
+            weights = conservation_scores * mask[b, 0] 
+            
+            # Min-Max归一化到[0.5, 1.5]范围
+            valid_weights = weights[mask[b, 0]]
+            if len(valid_weights) > 0:
+                min_weight = valid_weights.min()
+                max_weight = valid_weights.max()
+                if max_weight > min_weight:
+                    weights = 0.5 + (weights - min_weight) / (max_weight - min_weight)
+                else:
+                    weights = torch.ones_like(weights)
+                
+                # 对padding位置使用1.0的权重
+                weights = weights * mask[b, 0].float() + (~mask[b, 0]).float()
+            
+            weights_batch.append(weights)
+        
+        weight_stacked = torch.stack(weights_batch) # shape: [bs, seq_len]
+        return weight_stacked.unsqueeze(1).expand(-1, num_alignment, -1)  # shape: [bs, 32, seq_len]
+
+    def forward(self, lm_logits, labels):
+        if labels is not None:
+            # 基础cross entropy loss
+            loss_fct = CrossEntropyLoss(ignore_index=-100, reduction='none')
+            ce_loss_unreduced = loss_fct(lm_logits.float().view(-1, lm_logits.size(-1)), 
+                                    labels.long().view(-1))
+            
+            # 计算PSSM权重
+            pssm_weights = self.calculate_pssm_weights(labels)
+            pssm_weights = pssm_weights.reshape(-1)  # 展平以匹配ce_loss的形状
+            
+            # 应用PSSM权重
+            weighted_ce_loss = (ce_loss_unreduced * pssm_weights).mean()
+            
+            # 计算普通的CE loss（用于监控）
+            ce_loss = ce_loss_unreduced.mean()
+            
+            # 计算diversity loss
+            alpha = 0.1
+            probs = F.softmax(lm_logits.float(), dim=-1)
+            entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1)
+            mask = (labels != -100).float()
+            diversity_loss = -torch.sum(entropy * mask) / (mask.sum() + 1e-10)
+            
+            # 组合losses
+            beta = 1.0  # 可以根据需要调整
+            loss = beta * weighted_ce_loss + alpha * diversity_loss
+            
+            return loss, weighted_ce_loss, ce_loss, diversity_loss
 
 
 class MSA_AUGMENTOR(T5PreTrainedModel):
@@ -1605,6 +1816,8 @@ class MSA_AUGMENTOR(T5PreTrainedModel):
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
         self.esm_input = nn.Linear(1280, config.d_model)
         self.debug=config.debug
+
+        self.loss_fct_chq = PSSMWeightedCELoss(padding_idx=-100)
         
         # Encoder
         encoder_config = copy.deepcopy(config)
@@ -1763,12 +1976,12 @@ class MSA_AUGMENTOR(T5PreTrainedModel):
         #     print('encoder hidden_states shape',hidden_states.shape)
         #     print('\n')
         # Decode
-        print("Start decoding process checking ...")
-        print("decoder_input_ids: ", decoder_input_ids is None)
-        print("decoder_inputs_embeds: ", decoder_inputs_embeds is None)
-        print("decoder_attention_mask: ", decoder_attention_mask is None)
-        print("past_key_values: ", past_key_values is None)
-        print("hidden_states: ", hidden_states is None)
+        # print("Start decoding process checking ...")
+        # print("decoder_input_ids: ", decoder_input_ids is not None)
+        # print("decoder_inputs_embeds: ", decoder_inputs_embeds is not None)
+        # print("decoder_attention_mask: ", decoder_attention_mask is not None)
+        # print("past_key_values: ", past_key_values is not None)
+        # print("hidden_states: ", hidden_states is not None)
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
@@ -1800,32 +2013,73 @@ class MSA_AUGMENTOR(T5PreTrainedModel):
             # Rescale output before projecting on vocab
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/transformer.py#L586
             sequence_output = sequence_output * (self.model_dim**-0.5)
+        
 
+        # chq: loss_calculation
         lm_logits = self.lm_head(sequence_output)
 
         loss = None
+        using_pssm = True
         if labels is not None:
-            # when we use bf16, there would be dtype conflict, so we need to convert the lm_logits and labels to float and long, respectively.
-            loss_fct = CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(lm_logits.float().view(-1, lm_logits.size(-1)), labels.long().view(-1))
-            # loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
-            # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
+            if using_pssm == True:
+                loss, weighted_ce, ce_loss, diversity_loss = self.loss_fct_chq(lm_logits, labels)
+            else:
+                # when we use bf16, there would be dtype conflict, so we need to convert the lm_logits and labels to float and long, respectively.
+                loss_fct = CrossEntropyLoss(ignore_index=-100)
+                loss = loss_fct(lm_logits.float().view(-1, lm_logits.size(-1)), labels.long().view(-1))
+                ce_loss = loss
+                # loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
+                # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
+
+                alpha = 0.1
+                probs = F.softmax(lm_logits.float(), dim=-1)
+                entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1)
+                mask = (labels != -100).float()
+                diversity_loss = -torch.sum(entropy * mask) / (mask.sum() + 1e-10)
+
+                loss = loss + alpha * diversity_loss
 
         if not return_dict:
             output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
             return ((loss,) + output) if loss is not None else output
-
-        return Seq2SeqLMOutput(
-            loss=loss,
-            logits=lm_logits,
-            past_key_values=decoder_outputs.past_key_values,
-            decoder_hidden_states=decoder_outputs.hidden_states,
-            decoder_attentions=decoder_outputs.attentions,
-            cross_attentions=decoder_outputs.cross_attentions,
-            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
-            encoder_hidden_states=encoder_outputs.hidden_states,
-            encoder_attentions=encoder_outputs.attentions,
-        )
+        
+        if using_pssm == True:
+            return Seq2SeqLMOutput(
+                loss=loss,
+                logits=lm_logits,
+                past_key_values=decoder_outputs.past_key_values,
+                decoder_hidden_states=decoder_outputs.hidden_states,
+                decoder_attentions=decoder_outputs.attentions,
+                cross_attentions=decoder_outputs.cross_attentions,
+                encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+                encoder_hidden_states=encoder_outputs.hidden_states,
+                encoder_attentions=encoder_outputs.attentions,
+                # losses_detail={
+                #         "ce_loss": ce_loss.detach(),
+                #         "diversity_loss": diversity_loss.detach()
+                #     }
+                # losses_detail={
+                #         "weight_ce_loss": weighted_ce.detach(),
+                #         "ce_loss": ce_loss.detach(),
+                #         "diversity_loss": diversity_loss.detach()
+                #     }
+            )
+        else: 
+            return Seq2SeqLMOutput(
+                loss=loss,
+                logits=lm_logits,
+                past_key_values=decoder_outputs.past_key_values,
+                decoder_hidden_states=decoder_outputs.hidden_states,
+                decoder_attentions=decoder_outputs.attentions,
+                cross_attentions=decoder_outputs.cross_attentions,
+                encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+                encoder_hidden_states=encoder_outputs.hidden_states,
+                encoder_attentions=encoder_outputs.attentions,
+                # losses_detail={
+                #         "ce_loss": ce_loss.detach(),
+                #         "diversity_loss": diversity_loss.detach()
+                #     }
+            )
 
     def prepare_inputs_for_generation(
         self,
