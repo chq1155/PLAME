@@ -29,7 +29,7 @@ import math
 import datasets
 import warnings
 
-from msadata import MSADataSet, MSABatchConverter, Alphabet, MSADataSet_
+from msadata import MSADataSet, MSABatchConverter, Alphabet, MSADataSet_, MSADataSet_v2
 from model import MSA_AUGMENTOR
 from torch.utils.data import random_split
 
@@ -342,10 +342,11 @@ def main():
 
     tokenizer = Alphabet.from_architecture(name="msa_transformer")
     tks = tokenizer.tok_to_idx
-    print(tks)
+    # print(tks)
 
     data_args.tokenizer = tokenizer
-    train_dataset = MSADataSet_(data_args, num_alignments=data_args.num_alignments, threshold=data_args.threshold)
+    train_dataset = MSADataSet_v2(data_args, num_alignments=data_args.num_alignments, threshold=data_args.threshold)
+    train_dataset.preload_cache()
 
     valid_ratio = 0.05
     test_ratio = 0.05

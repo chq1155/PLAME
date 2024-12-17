@@ -6,9 +6,11 @@ import random
 import string
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
-from typing import Sequence, Tuple, Union
+from typing import Optional, Dict, List, Union
 from torch.utils.data import Dataset
 from constant import proteinseq_toks
+from functools import lru_cache
+import copy
 
 RawMSA = Sequence[Tuple[str, str]]
 
@@ -441,6 +443,122 @@ class MSADataSet_(Dataset):
     def __iter__(self):
         for i in range(len(self)):
             yield self[i]
+
+
+class MSADataSet_v2(Dataset):
+    def __init__(self, data_args, num_alignments, threshold):
+        self.data_args = data_args
+        self.num_alignments = num_alignments
+        self.threshold = threshold
+        self.file_paths = self._get_file_paths([
+            '/uac/gds/hqcao23/hqcao/openfold/esm_msa/',
+            '/uac/gds/hqcao23/hqcao/openfold/uniclust_emb/'
+        ])
+        # 添加线程池
+        self.executor = ThreadPoolExecutor(max_workers=4)
+        # 添加文件缓存
+        self.file_cache = {}
+        self.max_cache_size = 100
+
+    def _get_file_paths(self, data_paths: List[str]) -> List[str]:
+        """优化文件路径收集逻辑"""
+        file_paths = []
+        for path in data_paths:
+            if os.path.isdir(path):
+                # 使用os.scandir提高目录扫描性能
+                with os.scandir(path) as entries:
+                    file_paths.extend(
+                        entry.path for entry in entries 
+                        if entry.is_file() and entry.name.endswith('.pkl')
+                    )
+            else:
+                file_paths.append(path)
+        return file_paths
+
+    def __len__(self):
+        return len(self.file_paths)
+
+    def _load_file(self, file_path: str) -> Optional[Union[Dict, List]]:
+        """改进的文件加载方法，添加缓存管理"""
+        # 检查内存缓存
+        if file_path in self.file_cache:
+            return self.file_cache[file_path]
+
+        try:
+            with open(file_path, "rb") as f:
+                data = pickle.load(f)
+                # 管理缓存大小
+                if len(self.file_cache) >= self.max_cache_size:
+                    # 移除最早添加的缓存项
+                    self.file_cache.pop(next(iter(self.file_cache)))
+                self.file_cache[file_path] = data
+                return data
+        except Exception as e:
+            print(f"Error loading {file_path}: {e}")
+            return None
+
+    def preload_cache(self):
+        """预加载文件到缓存"""
+        def load_file(file_path):
+            return self._load_file(file_path)
+
+        # 并发预加载前N个文件
+        files_to_preload = self.file_paths[:self.max_cache_size]
+        list(self.executor.map(load_file, files_to_preload))
+
+    def _get_valid_item(self, data: Optional[Union[Dict, List]]) -> Optional[Dict]:
+        """增强的数据验证"""
+        if data is None:
+            return None
+
+        if isinstance(data, list):
+            valid_items = [
+                item for item in data 
+                if isinstance(item, dict) and 
+                'seq' in item and 
+                len(item['seq']) <= self.threshold
+            ]
+            return random.choice(valid_items) if valid_items else None
+        elif isinstance(data, dict):
+            if 'seq' in data and len(data['seq']) <= self.threshold:
+                return data
+        return None
+
+    def __getitem__(self, index: int) -> Dict:
+        attempts = 0
+        max_attempts = len(self.file_paths)
+        
+        while attempts < max_attempts:
+            file_path = self.file_paths[index]
+            try:
+                data = self._load_file(file_path)
+                item = self._get_valid_item(data)
+                if item:
+                    # 深拷贝避免修改原始数据
+                    item = copy.deepcopy(item)
+                    if 'msa' in item:
+                        item['msa'] = random.sample(
+                            item['msa'], 
+                            min(self.num_alignments, len(item['msa']))
+                        )
+                        return item
+            except Exception as e:
+                print(f"Error processing {file_path}: {e}")
+            
+            index = (index + 1) % len(self.file_paths)
+            attempts += 1
+        
+        raise RuntimeError("Failed to find valid data after maximum attempts")
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+    def __del__(self):
+        """资源自动清理"""
+        self.executor.shutdown(wait=False)
+        self.file_cache.clear()
+
 
 class MSAInferenceDataSet(Dataset):
     def __init__(self, args):

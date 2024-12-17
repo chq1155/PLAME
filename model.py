@@ -1245,7 +1245,7 @@ class T5Stack(T5PreTrainedModel):
                     pool_emb
                 ).squeeze(1).squeeze(1)
             ).view(bs, num_alignments)
-            weights_msa = weights_msa.unsqueeze(-1).unsqueeze(-1)
+            weights_msa = weights_msa.unsqueeze(-1).unsqueeze(-1)  # chq_note: sequence-wise weight.
 
             inputs_embeds = inputs_embeds * weights_msa
 
