@@ -29,7 +29,7 @@ import math
 import datasets
 import warnings
 
-from msadata import MSADataSet, MSABatchConverter, Alphabet, MSADataSet_, MSADataSet_v2
+from msadata import MSADataSet, MSABatchConverter, Alphabet, MSADataSet_, MSADataSet_v2, MSADataSet_v3
 from model import MSA_AUGMENTOR
 from torch.utils.data import random_split
 
@@ -345,8 +345,8 @@ def main():
     # print(tks)
 
     data_args.tokenizer = tokenizer
-    train_dataset = MSADataSet_v2(data_args, num_alignments=data_args.num_alignments, threshold=data_args.threshold)
-    train_dataset.preload_cache()
+    train_dataset = MSADataSet_v3(data_args, num_alignments=data_args.num_alignments, threshold=data_args.threshold)
+    # train_dataset.preload_cache()
 
     valid_ratio = 0.05
     test_ratio = 0.05
@@ -365,7 +365,7 @@ def main():
 
     config.seq_per_msa = data_args.num_alignments
     config.vocab_size = len(tokenizer)
-    config.torch_dtype = torch.bfloat16
+    config.torch_dtype = torch.bfloat16 # bfloat16
     model = MSA_AUGMENTOR(config=config)
     model.gradient_checkpointing_enable()
     n_params = sum(dict((p.data_ptr(), p.numel()) for p in model.parameters()).values())
@@ -375,7 +375,7 @@ def main():
 
     # for param in model.parameters():
     #     print(param.dtype)
-    model = model.to(torch.bfloat16)
+    model = model.to(torch.bfloat16) # bfloat16
 
     
     if model.config.decoder_start_token_id is None:

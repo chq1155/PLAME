@@ -7,7 +7,7 @@ import torch
 import os 
 import logging
 import argparse
-from msadata import MSAInferenceDataSet, MSABatchConverter, Alphabet
+from msadata import MSAInferenceDataSet, MSABatchConverter, Alphabet, BatchConverter
 import time
 
 import warnings
@@ -22,11 +22,14 @@ logging.basicConfig(
   
 logger.setLevel(logging.INFO)
 
+def adjust_sequences(sequence_list, target_length):
+    return [seq[:target_length] if len(seq) > target_length else seq.ljust(target_length, '-') for seq in sequence_list]
 
-def msa_generate(args, model, dataset, msa_collator, tokenizer):
+def msa_generate(args, model, dataset, msa_collator, tokenizer, zero_shot=True, plame=False):
     """
     Generate msa for given dataset
     """
+    protein_count = 0
     with torch.no_grad():
         output_dir = os.path.join(args.output_dir, args.mode, f"A{args.augmentation_times}T{args.trials_times}R{args.repetition_penalty}T{args.temperature}P{args.top_p}")
         args_dict = vars(args)
@@ -36,13 +39,29 @@ def msa_generate(args, model, dataset, msa_collator, tokenizer):
         logger.info('generate src files-num: {}'.format(len(dataset)))
         
         for protein_data in dataset:
+            protein_count += 1
+            print(f"Current Progress: Protein {protein_count}/{len(dataset)}")
             infer_time_avg = 0.0
             
             msa_name = os.path.basename(protein_data['name']).split('.')[0]
             original_seq = protein_data['seq']
             esm = protein_data['emb']
-            input_ids = [original_seq, esm]
-            esm, src_ids = msa_collator.infer_batch_convert(input_ids, args.num_alignments)
+            print("="*100)
+            print("ori_seq", original_seq)
+            print("="*100)
+
+            if plame:
+                msa_seqs = protein_data['msa']
+                input_ids = [original_seq, esm, msa_seqs]
+                esm, src_ids, msa_ids = msa_collator.infer_batch_convert(input_ids, args.num_alignments, plame=True)
+                msa_ids = msa_ids.to(args.device)
+                if len(msa_ids) == 0:
+                    print('transfer to zero_shot mode since there is no detected MSA:')
+                    zero_shot = True
+            else:
+                input_ids = [original_seq, esm]
+                esm, src_ids = msa_collator.infer_batch_convert(input_ids, args.num_alignments, plame=False) # float tensors
+            
             esm = esm.to(args.device)
             src_ids = src_ids.to(args.device)
             
@@ -55,12 +74,26 @@ def msa_generate(args, model, dataset, msa_collator, tokenizer):
                     logger.info(f'File {a3m_file_name} already exists, skip')
                     continue
                 start = time.time()
-                output = model.generate(src_ids, esm, do_sample=True, top_k=5, top_p=0.95, repetition_penalty=args.repetition_penalty, \
-                                    max_length=original_seq_len+1, gen_seq_num=original_seq_num*args.augmentation_times) # TODO
+                output = model.generate(
+                    src_ids, 
+                    esm, 
+                    do_sample=True, 
+                    top_k=5, 
+                    top_p=0.95, 
+                    repetition_penalty=args.repetition_penalty,
+                    max_length=original_seq_len+1, 
+                    gen_seq_num=original_seq_num*args.augmentation_times,
+                    zero_shot=zero_shot,
+                    plame=plame,
+                    msa_ids=msa_ids,
+                    ) # chq_edit
                 end = time.time()
                 infer_time_avg += (end - start) / args.trials_times
                 generate_seq = [tokenizer.decode(seq_token, skip_special_tokens=True).replace(' ','') for seq_token in output[0]]
+                # print('generate_seq:', generate_seq)
+                # generate_seq = adjust_sequences(generate_seq, original_seq_len) 
                 generate_seq = list(filter(lambda x: len(set(x)) >= 4 and len(x) == len(original_seq), generate_seq))
+                print('generate_seq:', generate_seq)
                 # generate_seq = list(filter(lambda x: len(set(x)) >= 4 and len(x) == len(msa[0][1]), generate_seq)) # filter our sequences with all gap '-'
                 with open(a3m_file_name,'w') as fw:
                     generate_msa_list = []
@@ -87,6 +120,8 @@ def inference(args):
     else:
         logger.warning("Loading a random model")
         model = MSAT5(config).to(args.device)
+
+    model = model.to(torch.bfloat16)
     dataset = MSAInferenceDataSet(args)
     
     msa_generate(
@@ -94,7 +129,9 @@ def inference(args):
         model=model,
         msa_collator=msadata_collator,
         dataset=dataset,
-        tokenizer=tokenizer
+        tokenizer=tokenizer,
+        zero_shot=args.zero_shot,
+        plame=args.plame,
     ) 
         
 
@@ -111,14 +148,17 @@ def parsing_arguments():
     parser.add_argument('--num_alignments', type=int, default=32, help="num alignments to generate")
     parser.add_argument('--device', type=str, default="cpu", help="the inference device")
 
+    parser.add_argument('--zero_shot', type=bool, default=True, help="Whether or not to use sampling ; use greedy decoding otherwise.")
+    parser.add_argument('--plame', type=bool, default=False, help="Whether or not to use plame")
+
     # Generation parmas
     parser.add_argument('--mode', type=str, choices=['orphan','artificial'], required=True, help="whether task is real world orphan enhancement or artificial enhancement")
     parser.add_argument('--repetition_penalty', type=float, default=1.2, help="repetition penalty for generation")
     parser.add_argument('-a','--augmentation_times', type=int, default=1, help="times of generated quality compared to original msa x1 x3 x5")
     parser.add_argument('-t', '--trials_times', type=int, default=5)    
     parser.add_argument('--do_sample', type=bool, default=True, help="Whether or not to use sampling ; use greedy decoding otherwise.")
-    # parser.add_argument('--num_beams', type=int, default=36, help="Number of beams for beam search. 1 means no beam search.")
-    # parser.add_argument('--num_beam_groups', type=int, default=6, help="Number of groups to divide num_beams into in order to ensure diversity among different groups of beams.")
+    parser.add_argument('--num_beams', type=int, default=1, help="Number of beams for beam search. 1 means no beam search.")
+    parser.add_argument('--num_beam_groups', type=int, default=1, help="Number of groups to divide num_beams into in order to ensure diversity among different groups of beams.")
     parser.add_argument('--diversity_penalty', type=float, default=1.0, help="diversity penalty for generation, ")
     parser.add_argument('--temperature', type=float, default=1.0, help="The value used to modulate the next token probabilities.")
     parser.add_argument('--top_p', type=float, default=1.0, help="If set to float < 1, only the smallest set of most probable tokens with probabilities that add up to top_p or higher are kept for generation.")

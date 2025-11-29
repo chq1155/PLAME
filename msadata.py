@@ -6,7 +6,7 @@ import random
 import string
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, Dict, List, Union
+from typing import Optional, Dict, List, Union, Sequence, Tuple
 from torch.utils.data import Dataset
 from constant import proteinseq_toks
 from functools import lru_cache
@@ -278,11 +278,52 @@ class MSABatchConverter(BatchConverter):
         
         return esm_embeddings, tokens
     
-    def infer_batch_convert(self, inputs: Union[str, torch.Tensor], num_alignments: int):
+    # def infer_batch_convert(self, inputs: Union[str, torch.Tensor], num_alignments: int):
+    #     seq = inputs[0]
+    #     esm = inputs[1]
+    #     batch_size = 1
+    #     max_seqlen = len(seq)
+
+    #     tokens = torch.empty(
+    #         (
+    #             batch_size,
+    #             num_alignments,
+    #             max_seqlen
+    #             + int(self.alphabet.prepend_bos)
+    #             + int(self.alphabet.append_eos),
+    #         ),
+    #     )
+    #     tokens.fill_(self.alphabet.padding_idx)
+        
+    #     esm_embeddings = torch.empty(
+    #         (
+    #             batch_size,
+    #             max_seqlen,
+    #             1280
+    #         )
+    #     )
+    #     esm_embeddings.fill_(self.alphabet.padding_idx)
+        
+    #     esm_tokens = super().esm_convert(esm)
+    #     seq_tokens = super().seq_convert(num_alignments, esm)
+    #     tokens[0, : seq_tokens.size(0), : seq_tokens.size(1)] = seq_tokens
+    #     esm_embeddings[0, : esm_tokens.size(0), : esm_tokens.size(1)] = esm_tokens
+
+    #     print(f"token and esm emb shape: {tokens.shape}, {esm_embeddings.shape}")
+        
+    #     return esm_embeddings, tokens
+
+    def infer_batch_convert(self, inputs: Union[str, torch.Tensor], num_alignments: int, plame: bool = False):
         seq = inputs[0]
         esm = inputs[1]
         batch_size = 1
         max_seqlen = len(seq)
+
+        if plame == True: 
+            msa = inputs[2]
+            num_alignments = len(msa)
+        else: 
+            msa = None
 
         tokens = torch.empty(
             (
@@ -309,12 +350,20 @@ class MSABatchConverter(BatchConverter):
         tokens[0, : seq_tokens.size(0), : seq_tokens.size(1)] = seq_tokens
         esm_embeddings[0, : esm_tokens.size(0), : esm_tokens.size(1)] = esm_tokens
 
-        print(f"token and esm emb shape: {tokens.shape}, {esm_embeddings.shape}")
+        # 如果 zero_shot 为 False，则处理 MSA 信息
+        if plame:
+            msa_tokens = self.msa_batch_convert(msa)  # 调用父类方法转换 MSA
+            print(f"token and esm emb shape: {msa_tokens.shape}, {esm_embeddings.shape}")
+
+            return esm_embeddings, tokens, msa_tokens
         
         return esm_embeddings, tokens
     
     def to_bf16(self, tensor):
         return tensor.to(torch.bfloat16) if isinstance(tensor, torch.Tensor) else tensor
+    
+    def to_fp16(self, tensor):
+        return tensor.to(torch.float16) if isinstance(tensor, torch.Tensor) else tensor
 
     # def __call__(self, batch):
     #     labels = self.msa_batch_convert([example["msa"] for example in batch])
@@ -328,6 +377,7 @@ class MSABatchConverter(BatchConverter):
     def __call__(self, batch):
         labels = self.msa_batch_convert([example["msa"] for example in batch])
         esm_emb, input_ids = self.esm_batch_convert([example["emb"] for example in batch], labels)
+        input_ids = self.msa_batch_convert([example["msa_input"] for example in batch])
         
         labels[labels==self.alphabet.padding_idx] = -100
         attention_mask = input_ids.ne(self.alphabet.padding_idx).type_as(input_ids)
@@ -345,8 +395,9 @@ class MSABatchConverter(BatchConverter):
         # 转换除 input_ids 外的所有张量为 bfloat16
         outputs = {k: self.to_bf16(v) if k != 'input_ids' else v 
                 for k, v in outputs.items()}
+        # outputs = {k: self.to_fp16(v) if k != 'input_ids' else v 
+        #         for k, v in outputs.items()}
         # print(outputs['input_ids'][0][0][:50], outputs['labels'][0][0][:50])
-        # print(f"input_ids type: {outputs['input_ids'].dtype}")
         return outputs
 
 class MSADataSet(Dataset):
@@ -444,6 +495,96 @@ class MSADataSet_(Dataset):
         for i in range(len(self)):
             yield self[i]
 
+class MSADataSet_v3(Dataset):
+    def __init__(self, data_args, num_alignments, threshold):
+        self.data_args = data_args
+        self.num_alignments = num_alignments
+        self.threshold = threshold
+        self.file_paths = self._get_file_paths([
+            '/uac/gds/hqcao23/hqcao/openfold/esm_msa/',
+            # '/uac/gds/hqcao23/hqcao/openfold/uniclust_emb/'
+        ])
+        self.max_attempts = len(self.file_paths)  # 添加最大尝试次数
+
+    def _get_file_paths(self, data_paths: List[str]) -> List[str]:
+        file_paths = []
+        for path in data_paths:
+            if os.path.isdir(path):
+                with os.scandir(path) as entries:
+                    file_paths.extend(
+                        entry.path for entry in entries 
+                        if entry.is_file() and entry.name.endswith('.pkl')
+                    )
+            else:
+                file_paths.append(path)
+        return file_paths
+
+    @lru_cache(maxsize=100)
+    def _load_file(self, file_path: str) -> Optional[Union[Dict, List]]:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+            
+        try:
+            with open(file_path, "rb") as f:
+                return pickle.load(f)
+        except Exception as e:
+            raise RuntimeError(f"Error loading {file_path}: {str(e)}")
+
+    def _get_valid_item(self, data: Union[Dict, List]) -> Optional[Dict]:
+        if isinstance(data, list):
+            valid_items = [
+                item for item in data 
+                if isinstance(item, dict) and 
+                'seq' in item and 
+                len(item['seq']) <= self.threshold
+            ]
+            return random.choice(valid_items) if valid_items else None
+        elif isinstance(data, dict) and 'seq' in data and len(data['seq']) <= self.threshold:
+            return data
+        return None
+
+    def __getitem__(self, index: int) -> Dict:
+        attempts = 0
+        original_index = index
+        
+        while attempts < self.max_attempts:
+            file_path = self.file_paths[index]
+            try:
+                data = self._load_file(file_path)
+                item = self._get_valid_item(data)
+                if item and 'msa' in item:
+                    item = item.copy()  # 避免修改缓存的数据
+
+                    if self.num_alignments >= len(item['msa']):
+                        msa_input = item['msa']  
+                        msa = item['msa'] 
+                    else:
+                        num_sequences = min(self.num_alignments, len(item['msa']))
+                        msa_input = random.sample(item['msa'], num_sequences)
+                        remaining = [seq for seq in item['msa'] if seq not in msa_input]
+                        if len(remaining) < num_sequences:
+                            additional_samples = random.sample(msa_input, num_sequences - len(remaining))
+                            msa = remaining + additional_samples
+                        else:
+                            msa = random.sample(remaining, num_sequences)
+
+                    item['msa'] = msa
+                    item['msa_input'] = msa_input
+                    # item['msa'] = random.sample(
+                    #     item['msa'], 
+                    #     min(self.num_alignments, len(item['msa']))
+                    # )
+                    return item
+            except Exception as e:
+                print(f"Error at index {index} ({file_path}): {e}")
+            
+            index = (index + 1) % len(self.file_paths)
+            attempts += 1
+        
+        raise RuntimeError(f"Failed to find valid data after {self.max_attempts} attempts, starting from index {original_index}")
+
+    def __len__(self) -> int:
+        return len(self.file_paths)
 
 class MSADataSet_v2(Dataset):
     def __init__(self, data_args, num_alignments, threshold):
@@ -558,7 +699,6 @@ class MSADataSet_v2(Dataset):
         """资源自动清理"""
         self.executor.shutdown(wait=False)
         self.file_cache.clear()
-
 
 class MSAInferenceDataSet(Dataset):
     def __init__(self, args):

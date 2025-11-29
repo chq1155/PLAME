@@ -36,7 +36,10 @@ from transformers.activations import ACT2FN
 from transformers.file_utils import (
     DUMMY_INPUTS,
     DUMMY_MASK,
+    add_start_docstrings,
+    add_start_docstrings_to_model_forward,
     is_torch_fx_proxy,
+    replace_return_docstrings,
 )
 from transformers.modeling_outputs import (
     BaseModelOutput,
@@ -1064,8 +1067,7 @@ class T5Block(nn.Module):
         self.is_decoder = config.is_decoder
         self.layer = nn.ModuleList()
         self.axial_attention=config.axial_attention
-        self.debug=config.debug
-        self.debug_blank=8
+        
         if self.axial_attention:
             self.layer.append(T5LayerAxialAttention(config, has_relative_attention_bias=has_relative_attention_bias))
         else:
@@ -1130,9 +1132,8 @@ class T5Block(nn.Module):
             cross_col_attn_past_key_value=past_key_value[4:]
         else:
             self_attn_past_key_value, cross_attn_past_key_value,cross_col_attn_past_key_value = None, None, None
-        if self.debug:
-            print(' '*self.debug_blank,'-'*30)
-            print(' '*self.debug_blank,'|T5Block --> Self-attention')
+        # if self.is_decoder:
+        #     print('--'*5,'self-attention')
         self_attention_outputs = self.layer[0](
             hidden_states,
             attention_mask=attention_mask,
@@ -1163,10 +1164,7 @@ class T5Block(nn.Module):
                 query_length = present_key_value_state[0].shape[3]
             else:
                 query_length = None
-            if self.debug:
-                print(' '*self.debug_blank,'-'*30)
-                print(' '*self.debug_blank,'|T5Block --> Cross-attention')
-                
+         
             cross_attention_outputs = self.layer[1](
                 hidden_states,
                 key_value_states=encoder_hidden_states,
@@ -1218,15 +1216,63 @@ class T5Block(nn.Module):
 
         return outputs 
 
+PARALLELIZE_DOCSTRING = r"""
+    This is an experimental feature and is a subject to change at a moment's notice.
 
+    Uses a device map to distribute attention modules of the model across several devices. If no device map is given,
+    it will evenly distribute blocks across all devices.
 
+    Args:
+        device_map (`Dict[int, list]`, optional, defaults to None):
+            A dictionary that maps attention modules to devices. Note that the embedding module and LMHead are always
+            automatically mapped to the first device (for esoteric reasons). That means that the first device should
+            have fewer attention modules mapped to it than other devices. For reference, the t5 models have the
+            following number of attention modules:
+
+                - t5-small: 6
+                - t5-base: 12
+                - t5-large: 24
+                - t5-3b: 24
+                - t5-11b: 24
+
+    Example:
+
+    ```python
+    model = MSAT5.from_pretrained("t5-3b")
+    device_map = {
+        0: [0, 1, 2],
+        1: [3, 4, 5, 6, 7, 8, 9],
+        2: [10, 11, 12, 13, 14, 15, 16],
+        3: [17, 18, 19, 20, 21, 22, 23],
+    }
+    model.parallelize(device_map)
+    ```
+"""
+DEPARALLELIZE_DOCSTRING = r"""
+    Moves the model to cpu from a model parallel state.
+
+    Example:
+
+    ```python
+    # On a 4 GPU machine with t5-3b:
+    model = MSAT5.from_pretrained("t5-3b")
+    device_map = {
+        0: [0, 1, 2],
+        1: [3, 4, 5, 6, 7, 8, 9],
+        2: [10, 11, 12, 13, 14, 15, 16],
+        3: [17, 18, 19, 20, 21, 22, 23],
+    }
+    model.parallelize(device_map)  # Splits the model across several devices
+    model.deparallelize()  # Put the model back on cpu and cleans memory by calling torch.cuda.empty_cache()
+    ```
+"""
 
 class T5Stack(T5PreTrainedModel):
     def __init__(self, config, embed_tokens=None, esm_tokens=None):
         super().__init__(config)
 
         self.embed_tokens = embed_tokens #shared embeddings
-        self.esm_tokens = esm_tokens
+        self.esm_tokens = esm_tokens # gx
         self.is_decoder = config.is_decoder
         self.axial_attention=config.axial_attention
         if self.is_decoder and self.axial_attention:
@@ -1243,12 +1289,17 @@ class T5Stack(T5PreTrainedModel):
 
         # Initialize weights and apply final processing
         self.post_init()
-        # Model parallel
         self.model_parallel = False
         self.device_map = None
         self.gradient_checkpointing = False
-        self.debug=config.debug
-        self.debug_blank=4
+
+        self.pool = nn.AdaptiveAvgPool2d((1, 1024))
+        self.weight_head = nn.Sequential(
+            nn.Linear(1024, 1),
+            nn.Sigmoid()
+        )
+
+    @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
         # Check validity of device_map
         self.device_map = (
@@ -1266,10 +1317,11 @@ class T5Stack(T5PreTrainedModel):
 
         # Set embed_tokens to first layer
         self.embed_tokens = self.embed_tokens.to(self.first_device)
-        self.esm_tokens = self.esm_tokens.to(self.first_device)
+        self.esm_tokens = self.esm_tokens.to(self.first_device) # gx
         # Set final layer norm to last device
         self.final_layer_norm = self.final_layer_norm.to(self.last_device)
 
+    @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def deparallelize(self):
         self.model_parallel = False
         self.device_map = None
@@ -1278,7 +1330,7 @@ class T5Stack(T5PreTrainedModel):
         for i in range(len(self.block)):
             self.block[i] = self.block[i].to("cpu")
         self.embed_tokens = self.embed_tokens.to("cpu")
-        self.esm_tokens = self.esm_tokens.to("cpu")
+        self.esm_tokens = self.esm_tokens.to("cpu") # gx
         self.final_layer_norm = self.final_layer_norm.to("cpu")
         torch.cuda.empty_cache()
 
@@ -1303,13 +1355,13 @@ class T5Stack(T5PreTrainedModel):
         output_hidden_states=None,
         return_dict=None,
         esm=None,
+        zero_shot=False,
+        plame=False,
     ):
-     
-        # Model parallel
         if self.model_parallel:
             torch.cuda.set_device(self.first_device)
             self.embed_tokens = self.embed_tokens.to(self.first_device)
-            self.esm_tokens = self.esm_tokens.to(self.first_device)
+            self.esm_tokens = self.esm_tokens.to(self.first_device) # gx
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -1317,16 +1369,14 @@ class T5Stack(T5PreTrainedModel):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        # checking input shape: in our cases, inputs_embeds should be None
         if input_ids is not None and inputs_embeds is not None:
             err_msg_prefix = "decoder_" if self.is_decoder else ""
             raise ValueError(
                 f"You cannot specify both {err_msg_prefix}input_ids and {err_msg_prefix}inputs_embeds at the same time"
             )
         elif input_ids is not None:
-            # input_shape = input_ids.size() # B,S
-            # input_ids = input_ids.view(-1, input_shape[-1])
-            
-            input_shape = input_ids.size() # B,R,C for MSA     
+            input_shape = input_ids.size() # batch_size, num_sequence, max_sequence_length
         elif inputs_embeds is not None:
             input_shape = inputs_embeds.size()[:-1]
         else:
@@ -1335,34 +1385,41 @@ class T5Stack(T5PreTrainedModel):
 
         if inputs_embeds is None and esm is None:
             assert self.embed_tokens is not None, "You have to initialize the model with valid token embeddings"
-            inputs_embeds = self.embed_tokens(input_ids)
+            inputs_embeds = self.embed_tokens(input_ids.long())
 
-        elif inputs_embeds is None and esm is not None:
-            # TODO
-            expand = input_ids.unsqueeze(-1).expand(-1, -1, -1, esm.shape[-1]).clone()
-            expand[:, :, :-1, :] = esm.unsqueeze(1)
-            
-            inputs_embeds = self.esm_tokens(expand)
+        elif input_ids is not None and inputs_embeds is None and esm is not None:
+            if plame:
+                inputs_embeds = self.embed_tokens(input_ids.long()) # [batch_size, num_alignments, seq_length]
+                bs, num_alignments, seq_length, hidden_size = inputs_embeds.shape
+                pool_emb = inputs_embeds.view(-1, seq_length, hidden_size).unsqueeze(1)
+                weights_msa = self.weight_head(self.pool(pool_emb).squeeze(1).squeeze(1))
+                weights_msa = weights_msa.view(bs, num_alignments, 1, 1)
+                inputs_embeds = inputs_embeds * (weights_msa * (0.0 if zero_shot else 1.0))
 
-        batch_size,num_alignments, seq_length = input_shape
+                expand = input_ids.unsqueeze(-1).expand(-1, -1, -1, esm.shape[-1]).clone()  # [batch_size, num_alignments, seq_length, esm_hidden_size]
+                expand[:, :, :-1, :] = esm.unsqueeze(1)
+                inputs_embeds_esm = self.esm_tokens(expand.bfloat16())
 
-        # required mask seq length can be calculated via length of past
-        # past_key_values:  [batch,head,seq_len_past,hid_dim] for text
-        # past_key_values:  [batch,num_align,head,seq_len_past,hid_dim] for msa
+                inputs_embeds = inputs_embeds + inputs_embeds_esm  # [batch_size, num_alignments, seq_length, hidden_size]
+            else:
+                expand = input_ids.unsqueeze(-1).expand(-1, -1, -1, esm.shape[-1]).clone()
+                expand[:, :, :-1, :] = esm.unsqueeze(1)
+                inputs_embeds = self.esm_tokens(expand.bfloat16())
+
+        batch_size, num_alignments, seq_length = input_shape
         mask_seq_length = past_key_values[0][0].shape[3] + seq_length if past_key_values is not None else seq_length # each time step will accumulate 1 in decoding phrase
 
         if use_cache is True:
             assert self.is_decoder, f"`use_cache` can only be set to `True` if {self} is used as a decoder"
 
         if attention_mask is None: 
-            attention_mask = torch.ones(batch_size,num_alignments,mask_seq_length).to(inputs_embeds.device) 
+            attention_mask = torch.ones(batch_size, num_alignments, mask_seq_length).to(inputs_embeds.device) 
             
         if self.is_decoder and encoder_attention_mask is None and encoder_hidden_states is not None:
             batch_size,num_alignments,encoder_seq_length,_ = encoder_hidden_states.size() 
             encoder_attention_mask = torch.ones( 
                batch_size,num_alignments,encoder_seq_length, device=inputs_embeds.device, dtype=torch.long
             )
-      
 
         # initialize past_key_values with `None` if past does not exist
         if past_key_values is None:
@@ -1370,21 +1427,16 @@ class T5Stack(T5PreTrainedModel):
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
-        
-        extended_attention_mask = torch.stack([self.get_extended_attention_mask(a, i.shape, inputs_embeds.device) for (a,i) in zip(attention_mask,input_ids)],0) # [batch,row,1,seq,seq] for decoder ; [batch,row,1,1,seq] for encoder
-        if self.debug:
-            print(' '*self.debug_blank,'T5Stack: extended_attention_mask',extended_attention_mask)
+        extended_attention_mask = torch.stack([self.get_extended_attention_mask(a, i.shape, inputs_embeds.device) for (a, i) in zip(attention_mask, input_ids)], 0) # [batch,row,1,seq,seq] for decoder ; [batch,row,1,1,seq] for encoder
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
         if self.is_decoder and encoder_hidden_states is not None:
-            encoder_batch_size, encoder_num_alignments,encoder_sequence_length, _ = encoder_hidden_states.size()
+            encoder_batch_size, encoder_num_alignments, encoder_sequence_length, _ = encoder_hidden_states.size()
             encoder_hidden_shape = (encoder_batch_size, encoder_num_alignments, encoder_sequence_length)
             if encoder_attention_mask is None:
                 encoder_attention_mask = torch.ones(encoder_hidden_shape, device=inputs_embeds.device)
             encoder_extended_attention_mask = torch.stack([self.invert_attention_mask(eam) for eam in encoder_attention_mask],0)
-            if self.debug:
-                print(' '*self.debug_blank,'T5Stack: encoder_extended_attention_mask',encoder_extended_attention_mask)
         else:
             encoder_extended_attention_mask = None
 
@@ -1400,20 +1452,11 @@ class T5Stack(T5PreTrainedModel):
         position_bias = None
         encoder_decoder_position_bias = None
         
-        hidden_states = self.dropout(inputs_embeds) # input->emb->dropout
+        hidden_states = self.dropout(inputs_embeds)
 
         for i, (layer_module, past_key_value) in enumerate(zip(self.block, past_key_values)):
-            if self.debug:
-                if self.is_decoder:
-                    print(' '*self.debug_blank,'Decoder Block {}'.format(i))
-                else:
-                    print(' '*self.debug_blank,'Encoder Block {}'.format(i))
-                if past_key_value is None:
-                    print(' '*self.debug_blank,'past_key_value is None')
-                else:
-                    print(' '*self.debug_blank,'past_key_value shape ',len(past_key_value),past_key_value[0].shape)
-            layer_head_mask = head_mask[i] #usually None
-            cross_attn_layer_head_mask = cross_attn_head_mask[i] #usually None
+            layer_head_mask = head_mask[i] # usually None
+            cross_attn_layer_head_mask = cross_attn_head_mask[i] # usually None
             # Model parallel
             if self.model_parallel:
                 torch.cuda.set_device(hidden_states.device)
@@ -1482,11 +1525,6 @@ class T5Stack(T5PreTrainedModel):
                 layer_outputs = layer_outputs[:1] + (None,) + layer_outputs[1:]
 
             hidden_states, present_key_value_state = layer_outputs[:2]
-            # if self.is_decoder:
-            #     print('T5Stack(layer): present_key_value_state shape: ',len(present_key_value_state),len(present_key_value_state[0]),present_key_value_state[0][0].shape)
-            # We share the position biases between the layers - the first layer store them
-            # layer_outputs = hidden-states, key-value-states (self-attention position bias), (self-attention weights),
-            # (cross-attention position bias), (cross-attention weights)
             position_bias = layer_outputs[2]
             
             if self.is_decoder and encoder_hidden_states is not None:
@@ -1612,7 +1650,6 @@ class MSAT5(T5PreTrainedModel):
         decoder_config.dec_col_attention=config.is_dec_col_attention
         self.decoder = T5Stack(decoder_config, self.shared)
         
-        
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
         # Initialize weights and apply final processing
@@ -1686,20 +1723,6 @@ class MSAT5(T5PreTrainedModel):
         return_dict=None,
         esm=None
     ):
-        if self.debug:
-            print('-'*75)
-            print('|',' '*27,'New forward step',' '*26,'|')
-            print('-'*75)
-            print('| %-25s'%'input_ids shape','%47s'%'{}|'.format(input_ids.shape if input_ids is not None else None))
-            print('| %-25s'%'labels shape','%47s'%'{}|'.format(labels.shape if labels is not None else None))
-            print('| %-25s'%'attention_mask shape','%47s'%'{}|'.format(attention_mask.shape if attention_mask is not None else None))
-            print('| %-25s'%'decoder_input_ids shape','%47s'%'{}|'.format(decoder_input_ids.shape if decoder_input_ids is not None else None))
-            print('| %-25s'%'past_key_values','%47s'%'{}|'.format(bool(past_key_values)))
-            print('| %-25s'%'use_cache is','%47s'%'{}|'.format(bool(use_cache)))
-            print('| %-25s'%'output_attentions','%47s'%'{}|'.format(bool(output_attentions)))
-            print('| %-25s'%'output_hidden_states','%47s'%'{}|'.format(bool(output_hidden_states)))
-            print('| %-25s'%'return_dict','%47s'%'{}|'.format(bool(return_dict)))
-            print('-'*75)
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -1708,16 +1731,9 @@ class MSAT5(T5PreTrainedModel):
             if self.config.num_layers == self.config.num_decoder_layers:
                 warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
                 decoder_head_mask = head_mask
-        # if self.debug:
-        #     print('---------------MSAT5(Encoder)-------------------')
-        #     print('encoder input',input_ids)
-        #     print('encoder input shape',input_ids.shape)
             
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
-            # Convert encoder inputs in embeddings if needed
-            if self.debug:
-                print('*'*25,'INTO Encoder(Stack)','*'*25)
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -1735,17 +1751,14 @@ class MSAT5(T5PreTrainedModel):
                 attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
             )
 
-        hidden_states = encoder_outputs[0] #只用encoder输出的last_hidden_states.
+        hidden_states = encoder_outputs[0]
 
         if self.model_parallel:
             torch.cuda.set_device(self.decoder.first_device)
 
-        # 训练时，直接输入Label就好了，会自动移位到的
         if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
-            # get decoder inputs from shifting lm labels to the right
             decoder_input_ids = self._shift_right(labels)
      
-        # Set device for model parallelism
         if self.model_parallel:
             torch.cuda.set_device(self.decoder.first_device)
             hidden_states = hidden_states.to(self.decoder.first_device)
@@ -1755,16 +1768,7 @@ class MSAT5(T5PreTrainedModel):
                 attention_mask = attention_mask.to(self.decoder.first_device)
             if decoder_attention_mask is not None:
                 decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
-        # if self.debug:
-        #     print('---------------MSAT5(Decoder)-------------------')
-        #     print('decoder input shape',decoder_input_ids.shape)
-        #     print('labels',labels)
-        #     print('decoder input',decoder_input_ids)
-        #     print('encoder hidden_states shape',hidden_states.shape)
-        #     print('\n')
-        # Decode
-        if self.debug:
-            print('*'*25,'INTO Decoder(Stack)','*'*25)
+
         decoder_outputs = self.decoder( # decoder forward过程得到output
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
@@ -1779,10 +1783,6 @@ class MSAT5(T5PreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-        # except RuntimeError:
-        #     print('decoder_input_shape',decoder_input_ids.shape)
-        #     print('encdoer_input_shape',input_ids.shape)
-        #     print('encoder_hidden_states',input_ids.shape)
 
         sequence_output = decoder_outputs[0]
 
@@ -1798,21 +1798,11 @@ class MSAT5(T5PreTrainedModel):
             sequence_output = sequence_output * (self.model_dim**-0.5)
 
         lm_logits = self.lm_head(sequence_output)
-        if self.debug:
-            print('-'*75)
-            print('\nThis forward step is over, outputs are')
-            print('| %-25s'%'input_ids shape','%47s'%'{}|'.format(input_ids.shape if input_ids is not None else None))
-            print('| %-25s'%'decoder_input_ids shape','%47s'%'{}|'.format(decoder_input_ids.shape if decoder_input_ids is not None else None))
-            print('| %-25s'%'lm_logits shape','%47s'%'{}|'.format(lm_logits.shape))
-            print('| %-25s'%'labels shape','%47s'%'{}|'.format(labels.shape if labels is not None else None))
-            print('-'*75)
-          
           
         loss = None
         if labels is not None:
             loss_fct = CrossEntropyLoss(ignore_index=-100)
             loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
-            # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
 
         if not return_dict:
             output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
@@ -1829,6 +1819,7 @@ class MSAT5(T5PreTrainedModel):
             encoder_hidden_states=encoder_outputs.hidden_states,
             encoder_attentions=encoder_outputs.attentions,
         )
+        
     """Following methods Override original ones in GenerationMixin to adapte for MSA generatation process"""
     def _prepare_attention_mask_for_generation(
         self,
@@ -1863,7 +1854,14 @@ class MSAT5(T5PreTrainedModel):
             return torch.ones((batch_size,gen_seq_num,1), dtype=torch.long, device=device) * decoder_start_token_id
         
     def prepare_encoder_decoder_kwargs_for_MSA_generation(
-        self, inputs_tensor: torch.Tensor, esm: torch.Tensor, model_kwargs, model_input_name: Optional[str] = None
+        self, 
+        inputs_tensor: torch.Tensor, 
+        esm: torch.Tensor, 
+        model_kwargs, 
+        model_input_name: Optional[str] = None, 
+        plame=False, 
+        zero_shot=False, 
+        msa_ids=None,
     ) -> Dict[str, Any]:
         # 1. get encoder
         encoder = self.get_encoder()
@@ -1881,6 +1879,11 @@ class MSAT5(T5PreTrainedModel):
         encoder_kwargs["return_dict"] = True
         encoder_kwargs[model_input_name] = inputs_tensor
         encoder_kwargs["esm"] = esm
+        # core update: adding msa information into encoder_kwargs
+        encoder_kwargs["zero_shot"] = zero_shot
+        encoder_kwargs['plame'] = plame
+        if plame is True:
+            encoder_kwargs["input_ids"] = msa_ids
         model_kwargs["encoder_outputs"] = encoder(**encoder_kwargs)
 
         return model_kwargs
@@ -1984,6 +1987,9 @@ class MSAT5(T5PreTrainedModel):
         synced_gpus: Optional[bool] = False,
         exponential_decay_length_penalty: Optional[Tuple[Union[int, float]]] = None,
         gen_seq_num=10,
+        zero_shot=False, # chq_edit
+        plame=False, # chq_edit
+        msa_ids=None,
         **model_kwargs,
     ) :
         
@@ -2024,7 +2030,7 @@ class MSAT5(T5PreTrainedModel):
         # otherwise model_input_name is None
         # all model-specific keyword inputs are removed from `model_kwargs`
         inputs_tensor, model_input_name, model_kwargs = self._prepare_model_inputs(inputs, bos_token_id, model_kwargs)
-        batch_size = inputs_tensor.shape[0]
+        batch_size = inputs_tensor.shape[0] # inputs_tensor is the initialized pdf of generated sequences, with shape (1, num_alignments, max_length)
 
         # 3. Define other model kwargs
         model_kwargs["output_attentions"] = output_attentions
@@ -2038,12 +2044,15 @@ class MSAT5(T5PreTrainedModel):
             model_kwargs["attention_mask"] = self._prepare_attention_mask_for_generation(
                 inputs_tensor, pad_token_id, eos_token_id
             )
-
         if self.config.is_encoder_decoder and "encoder_outputs" not in model_kwargs:
-            # if model is encoder decoder encoder_outputs are created
-            # and added to `model_kwargs`
             model_kwargs = self.prepare_encoder_decoder_kwargs_for_MSA_generation(
-                inputs_tensor, esm, model_kwargs, model_input_name
+                inputs_tensor, 
+                esm, 
+                model_kwargs, 
+                model_input_name,
+                msa_ids=msa_ids,
+                plame=plame,
+                zero_shot=zero_shot,
             )
 
         # 4. Prepare `input_ids` which will be used for auto-regressive generation
@@ -2057,7 +2066,6 @@ class MSAT5(T5PreTrainedModel):
                 gen_seq_num=gen_seq_num
             ) # 自回归第一个token
         else:
-            # if decoder-only then inputs_tensor has to be `input_ids`
             input_ids = inputs_tensor
 
         input_ids_seq_length = input_ids.shape[-1]

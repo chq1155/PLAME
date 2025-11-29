@@ -1184,11 +1184,6 @@ class T5Stack(T5PreTrainedModel):
         return_dict=None,
         esm=None,
     ):
-        # print("Start checking input...")
-        # print("input_ids: ", input_ids is None)
-        # print("inputs_embeds shape: ", inputs_embeds is None)
-        # print("esm shape: ", esm is None)
-     
         # Model parallel
         if self.model_parallel:
             torch.cuda.set_device(self.first_device)
@@ -1207,9 +1202,6 @@ class T5Stack(T5PreTrainedModel):
                 f"You cannot specify both {err_msg_prefix}input_ids and {err_msg_prefix}inputs_embeds at the same time"
             )
         elif input_ids is not None:
-            # input_shape = input_ids.size() # B,S
-            # input_ids = input_ids.view(-1, input_shape[-1])
-            
             input_shape = input_ids.size() # batch_size, num_sequence, max_sequence_length
         elif inputs_embeds is not None:
             input_shape = inputs_embeds.size()[:-1]
@@ -1220,21 +1212,12 @@ class T5Stack(T5PreTrainedModel):
         if inputs_embeds is None and esm is None:
             # chq: we need to keep this when we use this module as decoder.
             assert self.embed_tokens is not None, "You have to initialize the model with valid token embeddings"
-            inputs_embeds = self.embed_tokens(input_ids.long())
-            
-        if input_ids is None and inputs_embeds is None and esm is not None:
-            # TODO
-            # print("Entering loop1")
-            expand = input_ids.unsqueeze(-1).expand(-1, -1, -1, esm.shape[-1]).clone()
-            expand[:, :, :-1, :] = esm.unsqueeze(1)
-            
-            inputs_embeds = self.esm_tokens(expand)
-
+            inputs_embeds = self.embed_tokens(input_ids.long())           
         elif input_ids is not None and inputs_embeds is None and esm is not None:
-            # print("Entering loop2")
-            # chq_edit
+            # expand = input_ids.unsqueeze(-1).expand(-1, -1, -1, esm.shape[-1]).clone()
+            # expand[:, :, :-1, :] = esm.unsqueeze(1)            
+            # inputs_embeds = self.esm_tokens(expand)
             inputs_embeds = self.embed_tokens(input_ids.long()) # only support torch.long as input 
-
             bs, num_alignments, seq_length, hidden_size = inputs_embeds.shape
 
             pool_emb = inputs_embeds.view(-1, seq_length, hidden_size)
@@ -1245,27 +1228,17 @@ class T5Stack(T5PreTrainedModel):
                     pool_emb
                 ).squeeze(1).squeeze(1)
             ).view(bs, num_alignments)
-            weights_msa = weights_msa.unsqueeze(-1).unsqueeze(-1)  # chq_note: sequence-wise weight.
 
+            weights_msa = weights_msa.unsqueeze(-1).unsqueeze(-1)  # chq_note: sequence-wise weight.
             inputs_embeds = inputs_embeds * weights_msa
 
             expand = input_ids.unsqueeze(-1).expand(-1, -1, -1, esm.shape[-1]).clone()
             expand[:, :, :-1, :] = esm.unsqueeze(1)
             inputs_embeds_esm = self.esm_tokens(expand.bfloat16())
 
-            # print(f"inputs_embeds shape: {inputs_embeds.shape}")
-            # print(f"inputs_embeds_esm shape: {inputs_embeds_esm.shape}")
             inputs_embeds = inputs_embeds + inputs_embeds_esm  # (batch_size, num_alignments, seq_length, hidden_size)
-            # print(f"inputs_embeds_total shape: {inputs_embeds.shape}")
-            # print(inputs_embeds.dtype)
-            # print(inputs_embeds.device)
-
 
         batch_size, num_alignments, seq_length = input_shape
-
-        # required mask seq length can be calculated via length of past
-        # past_key_values:  [batch,head,seq_len_past,hid_dim] for text
-        # past_key_values:  [batch,num_align,head,seq_len_past,hid_dim] for msa
         mask_seq_length = past_key_values[0][0].shape[3] + seq_length if past_key_values is not None else seq_length # each time step will accumulate 1 in decoding phrase
 
         if use_cache is True:
@@ -1286,8 +1259,6 @@ class T5Stack(T5PreTrainedModel):
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
-        # print(type(inputs_embeds))
-        # print(inputs_embeds.device)
         extended_attention_mask = torch.stack([self.get_extended_attention_mask(a, i.shape, inputs_embeds.device) for (a, i) in zip(attention_mask, input_ids)], 0) # [batch,row,1,seq,seq] for decoder ; [batch,row,1,1,seq] for encoder
 
         # If a 2D or 3D attention mask is provided for the cross-attention
@@ -1316,12 +1287,6 @@ class T5Stack(T5PreTrainedModel):
         hidden_states = self.dropout(inputs_embeds)
 
         for i, (layer_module, past_key_value) in enumerate(zip(self.block, past_key_values)):
-            # if self.is_decoder:
-            #     print('-'*15,'go to layer {}'.format(i),'-'*15)
-            #     if past_key_value is None:
-            #         print('past_key_value is None')
-            #     else:
-            #         print('past_key_value shape ',len(past_key_value),past_key_value[0].shape)
             layer_head_mask = head_mask[i] # usually None
             cross_attn_layer_head_mask = cross_attn_head_mask[i] # usually None
             # Model parallel
@@ -1386,17 +1351,10 @@ class T5Stack(T5PreTrainedModel):
                     output_attentions=output_attentions,
                 )
 
-            # layer_outputs is a tuple with:
-            # hidden-states, key-value-states, (self-attention position bias), (self-attention weights), (cross-attention position bias), (cross-attention weights)
             if use_cache is False:
                 layer_outputs = layer_outputs[:1] + (None,) + layer_outputs[1:]
 
             hidden_states, present_key_value_state = layer_outputs[:2]
-            # if self.is_decoder:
-            #     print('T5Stack(layer): present_key_value_state shape: ',len(present_key_value_state),len(present_key_value_state[0]),present_key_value_state[0][0].shape)
-            # We share the position biases between the layers - the first layer store them
-            # layer_outputs = hidden-states, key-value-states (self-attention position bias), (self-attention weights),
-            # (cross-attention position bias), (cross-attention weights)
             position_bias = layer_outputs[2]
             
             if self.is_decoder and encoder_hidden_states is not None:
@@ -1615,11 +1573,8 @@ class PSSMWeightedCELoss(nn.Module):
         self.padding_idx = padding_idx
         self.pseudocount = pseudocount
         
-        # 标准氨基酸字母表
         self.alphabet = 'ACDEFGHIKLMNPQRSTVWY'
         self.aa_to_idx = {aa: idx for idx, aa in enumerate(self.alphabet)}
-        
-        # MSA Transformer的token映射
         self.standard_aa = ['L', 'A', 'G', 'V', 'S', 'E', 'R', 'T', 'I', 'D', 
                            'P', 'K', 'Q', 'N', 'F', 'Y', 'M', 'H', 'W', 'C', 
                            'X', 'B', 'U', 'Z', 'O', '-']
@@ -1641,8 +1596,8 @@ class PSSMWeightedCELoss(nn.Module):
             "<mask>": 5,
             "<sep>": 6
         }
-        
-        # BLOSUM62背景频率
+
+        self.idx_to_aa = {idx: aa for aa, idx in self.token_dict.items()}
         self.background_freq = torch.tensor([
             0.074, 0.025, 0.054, 0.054, 0.047,  # A, C, D, E, F
             0.074, 0.026, 0.068, 0.058, 0.099,  # G, H, I, K, L
@@ -1650,151 +1605,90 @@ class PSSMWeightedCELoss(nn.Module):
             0.057, 0.051, 0.073, 0.013, 0.032   # S, T, V, W, Y
         ])
 
-    # def token_to_aa(self, token_idx):
-    #     """将token索引转换为氨基酸"""
-    #     # 跳过特殊token
-    #     if token_idx < len(self.special_tokens):
-    #         return None
-        
-    #     # 计算在standard_aa中的索引
-    #     aa_idx = int(token_idx - len(self.special_tokens))
-    #     if aa_idx < len(self.standard_aa):
-    #         return self.standard_aa[aa_idx]
-    #     return None
-
     def token_to_aa(self, token_idx):
-        """将token索引转换为氨基酸"""
-        # 创建反向映射关系
-        idx_to_aa = {idx: aa for aa, idx in self.token_dict.items()}
-
-        # 如果 token 索引在映射表中，返回对应的氨基酸或特殊符号
-        if token_idx in idx_to_aa:
-            aa = idx_to_aa[token_idx]
-            # 检查是否为特殊 token，如果是则返回 None
-            if aa in self.special_tokens:
-                return None
-            return aa
-        return None
+        aa = self.idx_to_aa.get(token_idx, None)
+        if aa is None or aa in self.special_tokens:
+            return None
+        return aa
 
     def tokens_to_sequences(self, tokens_batch):
-        """将token形式的MSA转换为氨基酸序列"""
-        # 创建反向映射关系
-        idx_to_aa = {idx: aa for aa, idx in self.token_dict.items()}
-        
         batch_size, num_seqs, seq_len = tokens_batch.shape
         sequences = []
-        
         for b in range(batch_size):
             msa_sequences = []
             for n in range(num_seqs):
-                seq = []
-                for t in tokens_batch[b, n]:
-                    # 获取对应的氨基酸或特殊符号
-                    aa = idx_to_aa.get(t.item(), None)
-                    # 跳过特殊 token
-                    if aa is not None and aa not in self.special_tokens:
-                        seq.append(aa)
+                seq = [
+                    self.idx_to_aa[t.item()] for t in tokens_batch[b, n] 
+                    if t.item() in self.idx_to_aa and self.idx_to_aa[t.item()] not in self.special_tokens
+                ]
                 msa_sequences.append(''.join(seq))
             sequences.append(msa_sequences)
-            
+
         return sequences
 
-    # def tokens_to_sequences(self, tokens_batch):
-    #     """将token形式的MSA转换为氨基酸序列"""
-    #     batch_size, num_seqs, seq_len = tokens_batch.shape
-    #     sequences = []
-        
-    #     for b in range(batch_size):
-    #         msa_sequences = []
-    #         for n in range(num_seqs):
-    #             seq = []
-    #             for t in tokens_batch[b, n]:
-    #                 aa = self.token_to_aa(t.item())
-    #                 if aa is not None:
-    #                     seq.append(aa)
-    #             msa_sequences.append(''.join(seq))
-    #         sequences.append(msa_sequences)
-            
-    #     return sequences
-
     def calculate_pssm_weights(self, labels, ignore_index=-100):
-        """计算PSSM权重并进行归一化"""
-        batch_size = labels.shape[0]
-        num_alignment = labels.shape[1]
-        seq_len = labels.shape[-1]
-        labels_3d = labels
-        
-        # 创建mask，排除padding位置
-        mask = (labels_3d != ignore_index)
-        
-        weights_batch = []
+        """计算 PSSM 权重并进行归一化"""
+        batch_size, num_alignment, seq_len = labels.shape
+
+        mask = (labels != ignore_index)
+        valid_tokens = torch.tensor(
+            [idx for idx, aa in self.idx_to_aa.items() if aa not in self.special_tokens],
+            device=labels.device
+        )
+
+        counts = torch.zeros(batch_size, seq_len, len(self.alphabet), device=labels.device)
+
+        for aa_idx, aa in enumerate(self.alphabet):
+            token_id = self.token_dict.get(aa, None)
+            if token_id is not None:
+                counts[:, :, aa_idx] = (labels == token_id).sum(dim=1)
+
+        counts += self.pseudocount
+        freqs = counts / (counts.sum(dim=2, keepdim=True) + 1e-6)
+
+        entropy = -(freqs * torch.log2(freqs.clamp(min=1e-6))).sum(dim=2)
+        max_entropy = -torch.log2(torch.tensor(1.0 / len(self.alphabet), device=labels.device))
+        conservation_scores = 1 - (entropy / max_entropy)
+
+        weights = []
         for b in range(batch_size):
-            counts = torch.zeros(seq_len, len(self.alphabet), device=labels.device)
-            
-            for n in range(num_alignment):
-                for pos in range(seq_len):
-                    if mask[b, n, pos]:
-                        token = labels_3d[b, n, pos].item()
-                        aa = self.token_to_aa(token)
-                        if aa in self.aa_to_idx:
-                            counts[pos, self.aa_to_idx[aa]] += 1
-            
-            counts += self.pseudocount
-            
-            freqs = counts / (counts.sum(dim=1, keepdim=True) + 1e-10)
-            
-            entropy = -(freqs * torch.log2(freqs.clamp(min=1e-10))).sum(dim=1)
-            max_entropy = -torch.log2(torch.tensor(1.0/len(self.alphabet), device=labels.device))
-            conservation_scores = 1 - (entropy / max_entropy)
-            
-            weights = conservation_scores * mask[b, 0] 
-            
-            # Min-Max归一化到[0.5, 1.5]范围
-            valid_weights = weights[mask[b, 0]]
+            valid_weights = conservation_scores[b][mask[b, 0]]
             if len(valid_weights) > 0:
-                min_weight = valid_weights.min()
-                max_weight = valid_weights.max()
-                if max_weight > min_weight:
-                    weights = 0.5 + (weights - min_weight) / (max_weight - min_weight)
-                else:
-                    weights = torch.ones_like(weights)
-                
-                # 对padding位置使用1.0的权重
-                weights = weights * mask[b, 0].float() + (~mask[b, 0]).float()
-            
-            weights_batch.append(weights)
-        
-        weight_stacked = torch.stack(weights_batch) # shape: [bs, seq_len]
-        return weight_stacked.unsqueeze(1).expand(-1, num_alignment, -1)  # shape: [bs, 32, seq_len]
+                normalized_weights = conservation_scores[b]  # 不做额外归一化
+                normalized_weights = normalized_weights.clamp(min=0.5, max=1.5)  # 将权重限制在 [0.5, 1.5] 范围内
+                normalized_weights = normalized_weights * mask[b, 0].float() + (~mask[b, 0]).float()  # 保证无效位置权重为 1
+            else:
+                normalized_weights = torch.ones_like(conservation_scores[b])  # 无有效权重时，设为全 1
+            weights.append(normalized_weights)
+
+        weights = torch.stack(weights)  # shape: [batch_size, seq_len]
+        return weights.unsqueeze(1).expand(-1, num_alignment, -1)  # shape: [batch_size, num_alignment, seq_len]
 
     def forward(self, lm_logits, labels):
         if labels is not None:
-            # 基础cross entropy loss
-            loss_fct = CrossEntropyLoss(ignore_index=-100, reduction='none')
-            ce_loss_unreduced = loss_fct(lm_logits.float().view(-1, lm_logits.size(-1)), 
-                                    labels.long().view(-1))
-            
-            # 计算PSSM权重
+            loss_fct = CrossEntropyLoss(ignore_index=self.padding_idx, reduction='none')
+            ce_loss_unreduced = loss_fct(
+                lm_logits.float().view(-1, lm_logits.size(-1)),
+                labels.long().view(-1)
+            )
+
             pssm_weights = self.calculate_pssm_weights(labels)
-            pssm_weights = pssm_weights.reshape(-1)  # 展平以匹配ce_loss的形状
-            
-            # 应用PSSM权重
+            pssm_weights = pssm_weights.reshape(-1)  # 展平以匹配 ce_loss 的形状
+
+            # print(pssm_weights.shape, ce_loss_unreduced.shape)
+            # assert pssm_weights.shape == ce_loss_unreduced.shape, "PSSM weights shape mismatch!"
+
             weighted_ce_loss = (ce_loss_unreduced * pssm_weights).mean()
-            
-            # 计算普通的CE loss（用于监控）
             ce_loss = ce_loss_unreduced.mean()
-            
-            # 计算diversity loss
-            alpha = 0.1
+
+            alpha = 0.0
             probs = F.softmax(lm_logits.float(), dim=-1)
-            entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1)
-            mask = (labels != -100).float()
-            diversity_loss = -torch.sum(entropy * mask) / (mask.sum() + 1e-10)
-            
-            # 组合losses
-            beta = 1.0  # 可以根据需要调整
-            loss = beta * weighted_ce_loss + alpha * diversity_loss
-            
+            entropy = -torch.sum(probs * torch.log(probs + 1e-6), dim=-1)
+            mask = (labels != self.padding_idx).float()
+            diversity_loss = -torch.sum(entropy * mask) / (mask.sum() + 1e-6)
+
+            loss = weighted_ce_loss + alpha * diversity_loss
+
             return loss, weighted_ce_loss, ce_loss, diversity_loss
 
 
@@ -1811,8 +1705,6 @@ class MSA_AUGMENTOR(T5PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.model_dim = config.d_model
-        # shared embedding matrix 
-        # print(config.d_model)
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
         self.esm_input = nn.Linear(1280, config.d_model)
         self.debug=config.debug
@@ -1913,24 +1805,15 @@ class MSA_AUGMENTOR(T5PreTrainedModel):
         return_dict=None,
         esm=None
     ):
-       
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
         use_cache = False
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        # FutureWarning: head_mask was separated into two input args - head_mask, decoder_head_mask
-        if head_mask is not None and decoder_head_mask is None:
-            if self.config.num_layers == self.config.num_decoder_layers:
-                warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
-                decoder_head_mask = head_mask
-        # if self.debug:
-        #     print('---------------MSAT5(Encoder)-------------------')
-        #     print('encoder input',input_ids)
-        #     print('encoder input shape',input_ids.shape)
+        if head_mask is not None and decoder_head_mask is None and self.config.num_layers == self.config.num_decoder_layers:
+            warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
+            decoder_head_mask = head_mask
             
-        # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
-            # Convert encoder inputs in embeddings if needed
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -1948,40 +1831,23 @@ class MSA_AUGMENTOR(T5PreTrainedModel):
                 attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
             )
 
-        hidden_states = encoder_outputs[0] #只用encoder输出的last_hidden_states.
+        hidden_states = encoder_outputs[0]
 
         if self.model_parallel:
             torch.cuda.set_device(self.decoder.first_device)
 
-        # 训练时，直接输入Label就好了，会自动移位到的
         if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
-            # get decoder inputs from shifting lm labels to the right
             decoder_input_ids = self._shift_right(labels)
      
-        # Set device for model parallelism
         if self.model_parallel:
-            torch.cuda.set_device(self.decoder.first_device)
-            hidden_states = hidden_states.to(self.decoder.first_device)
-            if decoder_input_ids is not None:
-                decoder_input_ids = decoder_input_ids.to(self.decoder.first_device)
-            if attention_mask is not None:
-                attention_mask = attention_mask.to(self.decoder.first_device)
-            if decoder_attention_mask is not None:
-                decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
-        # if self.debug:
-        #     print('---------------MSAT5(Decoder)-------------------')
-        #     print('decoder input shape',decoder_input_ids.shape)
-        #     print('labels',labels)
-        #     print('decoder input',decoder_input_ids)
-        #     print('encoder hidden_states shape',hidden_states.shape)
-        #     print('\n')
-        # Decode
-        # print("Start decoding process checking ...")
-        # print("decoder_input_ids: ", decoder_input_ids is not None)
-        # print("decoder_inputs_embeds: ", decoder_inputs_embeds is not None)
-        # print("decoder_attention_mask: ", decoder_attention_mask is not None)
-        # print("past_key_values: ", past_key_values is not None)
-        # print("hidden_states: ", hidden_states is not None)
+            self._move_to_device(  # 自定义设备切换逻辑
+                hidden_states=hidden_states,
+                decoder_input_ids=decoder_input_ids,
+                attention_mask=attention_mask,
+                decoder_attention_mask=decoder_attention_mask,
+                device=self.decoder.first_device
+            )
+
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
@@ -1996,90 +1862,50 @@ class MSA_AUGMENTOR(T5PreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-        # except RuntimeError:
-        #     print('decoder_input_shape',decoder_input_ids.shape)
-        #     print('encdoer_input_shape',input_ids.shape)
-        #     print('encoder_hidden_states',input_ids.shape)
 
         sequence_output = decoder_outputs[0]
 
-        # Set device for model parallelism
         if self.model_parallel:
             torch.cuda.set_device(self.encoder.first_device)
             self.lm_head = self.lm_head.to(self.encoder.first_device)
             sequence_output = sequence_output.to(self.lm_head.weight.device)
 
         if self.config.tie_word_embeddings:
-            # Rescale output before projecting on vocab
-            # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/transformer.py#L586
-            sequence_output = sequence_output * (self.model_dim**-0.5)
-        
+            sequence_output *= self.model_dim**-0.5
 
-        # chq: loss_calculation
         lm_logits = self.lm_head(sequence_output)
 
         loss = None
-        using_pssm = True
         if labels is not None:
-            if using_pssm == True:
-                loss, weighted_ce, ce_loss, diversity_loss = self.loss_fct_chq(lm_logits, labels)
-            else:
-                # when we use bf16, there would be dtype conflict, so we need to convert the lm_logits and labels to float and long, respectively.
-                loss_fct = CrossEntropyLoss(ignore_index=-100)
-                loss = loss_fct(lm_logits.float().view(-1, lm_logits.size(-1)), labels.long().view(-1))
-                ce_loss = loss
-                # loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
-                # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
-
-                alpha = 0.1
-                probs = F.softmax(lm_logits.float(), dim=-1)
-                entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1)
-                mask = (labels != -100).float()
-                diversity_loss = -torch.sum(entropy * mask) / (mask.sum() + 1e-10)
-
-                loss = loss + alpha * diversity_loss
-
+            loss = self._compute_loss(lm_logits, labels, use_pssm=True)
+               
         if not return_dict:
             output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
             return ((loss,) + output) if loss is not None else output
         
-        if using_pssm == True:
-            return Seq2SeqLMOutput(
-                loss=loss,
-                logits=lm_logits,
-                past_key_values=decoder_outputs.past_key_values,
-                decoder_hidden_states=decoder_outputs.hidden_states,
-                decoder_attentions=decoder_outputs.attentions,
-                cross_attentions=decoder_outputs.cross_attentions,
-                encoder_last_hidden_state=encoder_outputs.last_hidden_state,
-                encoder_hidden_states=encoder_outputs.hidden_states,
-                encoder_attentions=encoder_outputs.attentions,
-                # losses_detail={
-                #         "ce_loss": ce_loss.detach(),
-                #         "diversity_loss": diversity_loss.detach()
-                #     }
-                # losses_detail={
-                #         "weight_ce_loss": weighted_ce.detach(),
-                #         "ce_loss": ce_loss.detach(),
-                #         "diversity_loss": diversity_loss.detach()
-                #     }
-            )
-        else: 
-            return Seq2SeqLMOutput(
-                loss=loss,
-                logits=lm_logits,
-                past_key_values=decoder_outputs.past_key_values,
-                decoder_hidden_states=decoder_outputs.hidden_states,
-                decoder_attentions=decoder_outputs.attentions,
-                cross_attentions=decoder_outputs.cross_attentions,
-                encoder_last_hidden_state=encoder_outputs.last_hidden_state,
-                encoder_hidden_states=encoder_outputs.hidden_states,
-                encoder_attentions=encoder_outputs.attentions,
-                # losses_detail={
-                #         "ce_loss": ce_loss.detach(),
-                #         "diversity_loss": diversity_loss.detach()
-                #     }
-            )
+        return Seq2SeqLMOutput(
+            loss=loss,
+            logits=lm_logits,
+            past_key_values=decoder_outputs.past_key_values,
+            decoder_hidden_states=decoder_outputs.hidden_states,
+            decoder_attentions=decoder_outputs.attentions,
+            cross_attentions=decoder_outputs.cross_attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+            encoder_hidden_states=encoder_outputs.hidden_states,
+            encoder_attentions=encoder_outputs.attentions,
+        )
+
+    def _compute_loss(self, logits, labels, use_pssm):
+        if use_pssm:
+            return self.loss_fct_chq(logits, labels)[0]  # 只返回 loss
+        loss_fct = CrossEntropyLoss(ignore_index=-100)
+        return loss_fct(logits.float().view(-1, logits.size(-1)), labels.long().view(-1))
+
+    def _move_to_device(self, **kwargs):
+        for name, tensor in kwargs.items():
+            if tensor is not None:
+                kwargs[name] = tensor.to(kwargs["device"])
+
 
     def prepare_inputs_for_generation(
         self,
@@ -2134,6 +1960,7 @@ class MSA_AUGMENTOR(T5PreTrainedModel):
 
             reordered_decoder_past = reordered_decoder_past + (reordered_layer_past_states,)
         return reordered_decoder_past
+
     def greedy_search(
         self,
         input_ids: torch.LongTensor,
