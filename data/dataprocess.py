@@ -46,7 +46,7 @@ if __name__ == '__main__':
         with open(path) as f:
             sequences = []
             result = {}
-            for j, seq in enumerate(f): # f应该是某个msa
+            for j, seq in enumerate(f):  # Each line is part of an MSA
                 sequences.append(list(seq.strip()))
                 if (j+1) % num_msa_files == 0:
                     src = sequences[:m]

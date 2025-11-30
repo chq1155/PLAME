@@ -1,18 +1,30 @@
-# Protein MSA Fold project
-## 运行环境
-```shell
-conda create -n MSA python=3.8.18
-pip install -r requirements.txt
-```
+# Protein MSA Fold (PLAME)
 
-## 修改记录
-将msadata.py根据Protein的部分进行了修改
+Utilities for training and inference on protein multiple sequence alignments.
 
-运行流程：seq(batch_size, seq_length) -> ESM(batch_size, seq_length, 1280) -> repeat * num_alignment(batch_size, num_alignment, seq_length, 1280) <-> label(batch_size, num_alignment, seq_length)
+## Environment
+- Recommended: `conda create -n protab python=3.8`  
+  Install dependencies with `pip install -r requirements.txt` or `conda env create -f environment.yml`.
+- Models rely on PyTorch/Accelerate; ensure GPUs are visible via `CUDA_VISIBLE_DEVICES`.
 
-除此之外，在model部分针对ESM优化了Embedding部分，即将nn.Embedding换成了nn.Linear以映射到hidden_dim
+## Layout
+- `plame/`: core library (`models/` for architectures, `data/` for datasets and collators).
+- `scripts/finetune.py`: training entry; launched by `finetune_v1.sh`.
+- `scripts/inference.py`: generation entry; launched by `inference.sh`.
 
-## 6.26更新
-在finetune.py加入了threshold以控制最大Protein Seq长度，可以在finetune.sh的--threshold参量进行调整
+## Finetuning
+- Main entry point: `finetune_v1.sh` (8 GPUs, cudagraphs enabled).  
+  Override defaults with environment variables:
+  - `DATA_DIR` (default `data/esm_msa/train`)
+  - `OUTPUT_DIR` (default `outputs/plame-v2-pdb`)
+- An alternative 4-GPU recipe is provided in `finetune.sh`. Adjust batch sizes and `DATA_DIR`/`OUTPUT_DIR` as needed.
 
-在msadata.py中加入了进度条以显示数据处理进度，并结合threshold控制数据长度
+## Inference
+- Run `inference.sh` to generate sequences. Configure paths via:
+  - `CHECKPOINT_DIR` (default `./openfold32/checkpoint-200000`)
+  - `DATA_PATH` (default `data/enzyme`)
+  - `OUTPUT_DIR` (default `outputs/enzyme_plame`)
+
+## Notes
+- Dataset and helper scripts now default to relative paths; override via environment variables when pointing to custom data.
+- All comments and logs are in English for easier sharing and collaboration.

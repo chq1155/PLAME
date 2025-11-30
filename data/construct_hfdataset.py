@@ -52,7 +52,7 @@ def main(args):
     if args.num_examples is not None and isinstance(args.num_examples,int):
         all_file_path = glob.glob(args.folder_path + '/*.alnfasta')[:args.num_examples]
     else:
-        all_file_path = glob.glob(args.folder_path + '/*.alnfasta') # 确定要读取的文件数量
+        all_file_path = glob.glob(args.folder_path + '/*.alnfasta')  # Collect files to read
     print('total : {} files'.format(len(all_file_path)))
     
     msa_files = [read_msa(file_path, args.num_seq_per_msa*2) for file_path in all_file_path]
