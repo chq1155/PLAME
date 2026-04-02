@@ -1,39 +1,34 @@
-__pycache__
-dataset
-test_output
-test_config
-result_config
-mixmer_output
-mixmer_large_config
-data.json
-wandb
-workspace_sample
-af2_msa
-all_pdb
-analysis
-average_protein
-casp14
-casp15
-denovo_cases
-enzyme_plame
-esm
-esmfold_pred
-evo
-evodiff_msa_aug_hifiad
-failure_case
-gt_pdb
-gt_pdb_dir
-msagpt_gt
-masagpt_msa_aug_hifiad
-openfold
-openfold32
-plame_msa_exp
-post
-seq_similarity
-shallow_enzymes
-TMscore4Python
-zero_shot
-af2_msa.tar.gz
-shallow_enzymes.zip
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Data (too large for git)
+data/openproteinset/
+data/esm_msa/
+data/uniclust_emb/
+data/inference_input/
+*.pkl
+
+# Model checkpoints
+checkpoint-*/
+outputs/
+*.tar.gz
+*.pt
+*.bin
+
+# Logs
+wandb/
 nohup.out
 output.log
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store

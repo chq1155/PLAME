@@ -1,147 +1,164 @@
-import json
-from transformers import T5Config
-from plame.models.msa import MSAT5
-from typing import List, Tuple
-import torch
-import torch
-import os 
-import logging
-import argparse
-from plame.data.msadata import MSAInferenceDataSet, MSABatchConverter, Alphabet
-import time
+#!/usr/bin/env python
+# coding=utf-8
+"""PLAME inference: generate MSA sequences from ESM2 embeddings."""
 
+import argparse
+import json
+import logging
+import os
+import time
 import warnings
+
+import torch
+from transformers import T5Config
+
+from plame.data.msadata import Alphabet, MSABatchConverter, MSAInferenceDataSet
+from plame.models.msa import MSAT5
+
 warnings.filterwarnings("ignore")
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        datefmt="%m/%d %H:%M:%S",
-        level=logging.INFO,
-    )
-  
-logger.setLevel(logging.INFO)
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%m/%d %H:%M:%S",
+    level=logging.INFO,
+)
+
 
 def adjust_sequences(sequence_list, target_length):
-    return [seq[:target_length] if len(seq) > target_length else seq.ljust(target_length, '-') for seq in sequence_list]
+    """Pad or truncate sequences to target_length."""
+    return [
+        seq[:target_length] if len(seq) > target_length else seq.ljust(target_length, "-")
+        for seq in sequence_list
+    ]
 
-def msa_generate(args, model, dataset, msa_collator, tokenizer, plame=False):
-    """
-    Generate msa for given dataset
-    """
+
+def msa_generate(args, model, dataset, msa_collator, tokenizer):
+    """Generate MSA sequences for each protein in the dataset."""
     protein_count = 0
     with torch.no_grad():
-        output_dir = os.path.join(args.output_dir, args.mode, f"A{args.augmentation_times}T{args.trials_times}R{args.repetition_penalty}T{args.temperature}P{args.top_p}")
-        args_dict = vars(args)
+        output_dir = os.path.join(
+            args.output_dir,
+            args.mode,
+            f"A{args.augmentation_times}T{args.trials_times}R{args.repetition_penalty}T{args.temperature}P{args.top_p}",
+        )
         os.makedirs(output_dir, exist_ok=True)
-        with open(os.path.join(output_dir,'params.json'), 'w') as f:
-            json.dump(args_dict, f, indent=4)
-        logger.info('generate src files-num: {}'.format(len(dataset)))
-        
+        with open(os.path.join(output_dir, "params.json"), "w") as f:
+            json.dump(vars(args), f, indent=4)
+
+        logger.info("Input proteins: %d", len(dataset))
+
         for protein_data in dataset:
             protein_count += 1
-            print(f"Current Progress: Protein {protein_count}/{len(dataset)}")
+            logger.info("Processing protein %d/%d: %s", protein_count, len(dataset),
+                        os.path.basename(protein_data["name"]).split(".")[0])
             infer_time_avg = 0.0
-            
-            msa_name = os.path.basename(protein_data['name']).split('.')[0]
-            original_seq = protein_data['seq']
-            esm = protein_data['emb']
+
+            msa_name = os.path.basename(protein_data["name"]).split(".")[0]
+            original_seq = protein_data["seq"]
+            esm = protein_data["emb"]
             input_ids = [original_seq, esm]
             esm, src_ids = msa_collator.infer_batch_convert(input_ids, args.num_alignments, plame=False)
             esm = esm.to(args.device)
             src_ids = src_ids.to(args.device)
-            print("="*100)
-            print("original_seq:", original_seq)
-            print("="*100)
-            
-            _, original_seq_num, original_seq_len = src_ids.size() # pls note that src_ids contains <bos>, so the original_seq_len is the length of original_seq + 1 
+
+            _, original_seq_num, original_seq_len = src_ids.size()
+
             for trial in range(args.trials_times):
                 msa_output_dir = os.path.join(output_dir, msa_name)
-                os.makedirs(msa_output_dir,exist_ok=True)
-                a3m_file_name = os.path.join(msa_output_dir,f"generation_{trial}.a3m")
+                os.makedirs(msa_output_dir, exist_ok=True)
+                a3m_file_name = os.path.join(msa_output_dir, f"generation_{trial}.a3m")
                 if os.path.exists(a3m_file_name):
-                    logger.info(f'File {a3m_file_name} already exists, skip')
+                    logger.info("File %s already exists, skip", a3m_file_name)
                     continue
+
                 start = time.time()
-                output = model.generate(src_ids, esm, do_sample=True, top_k=5, top_p=0.95, repetition_penalty=args.repetition_penalty, \
-                                    max_length=original_seq_len+1, gen_seq_num=original_seq_num*args.augmentation_times) # TODO
+                output = model.generate(
+                    src_ids, esm,
+                    do_sample=True, top_k=5, top_p=0.95,
+                    repetition_penalty=args.repetition_penalty,
+                    max_length=original_seq_len + 1,
+                    gen_seq_num=original_seq_num * args.augmentation_times,
+                )
                 end = time.time()
                 infer_time_avg += (end - start) / args.trials_times
-                generate_seq = [tokenizer.decode(seq_token, skip_special_tokens=True).replace(' ','') for seq_token in output[0]]
-                print(generate_seq)
-                generate_seq = adjust_sequences(generate_seq, original_seq_len-1) 
-                generate_seq = list(filter(lambda x: len(set(x)) >= 4 and len(x) == len(original_seq), generate_seq))
-                print(generate_seq)
-                # generate_seq = list(filter(lambda x: len(set(x)) >= 4 and len(x) == len(msa[0][1]), generate_seq)) # filter our sequences with all gap '-'
-                with open(a3m_file_name,'w') as fw:
-                    generate_msa_list = []
-        
-                    generate_msa_list.append('>' + msa_name)
-                    generate_msa_list.append(original_seq)
+
+                generate_seq = [
+                    tokenizer.decode(seq_token, skip_special_tokens=True).replace(" ", "")
+                    for seq_token in output[0]
+                ]
+                generate_seq = adjust_sequences(generate_seq, original_seq_len - 1)
+                generate_seq = [
+                    s for s in generate_seq
+                    if len(set(s)) >= 4 and len(s) == len(original_seq)
+                ]
+
+                with open(a3m_file_name, "w") as fw:
+                    lines = [">" + msa_name, original_seq]
                     for i, seq in enumerate(generate_seq):
-                        seq_name = 'MSAT5_Generate_condition_on_{}_seq_from_{}_{}'.format(src_ids.size(1),msa_name,i)
-                        generate_msa_list.append('>' + seq_name)
-                        generate_msa_list.append(seq)
-                        
-                    fw.write("\n".join(generate_msa_list))
-                    logger.info(f'Generate successful for {msa_name} trial: {trial}')
-            
-            print('avg infer time:', infer_time_avg)
+                        seq_name = f"MSAT5_Generate_condition_on_{src_ids.size(1)}_seq_from_{msa_name}_{i}"
+                        lines.append(">" + seq_name)
+                        lines.append(seq)
+                    fw.write("\n".join(lines))
+                    logger.info("Generated %d sequences for %s trial %d", len(generate_seq), msa_name, trial)
+
+            logger.info("Average inference time: %.2fs", infer_time_avg)
+
 
 def inference(args):
-    config = T5Config.from_pretrained('./config/')
+    """Load model and run MSA generation."""
+    config = T5Config.from_pretrained("./config/")
     tokenizer = Alphabet.from_architecture(name="msa_transformer")
     msadata_collator = MSABatchConverter(tokenizer)
+
     if args.checkpoints:
-        logger.info("loading model from {}".format(args.checkpoints))
+        logger.info("Loading model from %s", args.checkpoints)
         model = MSAT5.from_pretrained(args.checkpoints).to(args.device)
     else:
         logger.warning("Loading a random model")
         model = MSAT5(config).to(args.device)
 
-    model = model.to(torch.bfloat16) # base update
+    model = model.to(torch.bfloat16)
     dataset = MSAInferenceDataSet(args)
-    
+
     msa_generate(
         args,
         model=model,
         msa_collator=msadata_collator,
         dataset=dataset,
-        tokenizer=tokenizer
-    ) 
-        
+        tokenizer=tokenizer,
+    )
 
-def parsing_arguments():
-    parser=argparse.ArgumentParser()
-    # general params
-    parser.add_argument('--do_train', action='store_true', help="whether further fine-tune")
-    parser.add_argument('--do_predict', action='store_true', help="only create new seqs")
-    parser.add_argument('--checkpoints', type=str,\
-                        help="the folder path of model checkpoints, e.g '/msat5-base/checkpoint-740000'")
-    parser.add_argument('--data_path', type=str, \
-                        help="the folder path of poor data eg. './dataset/casp15/cfdb/'")
-    parser.add_argument('-o', '--output_dir', type=str, default="./output/", help="the folder path of output files")
-    parser.add_argument('--num_alignments', type=int, default=32, help="num alignments to generate")
-    parser.add_argument('--device', type=str, default="cpu", help="the inference device")
 
-    # Generation parmas
-    parser.add_argument('--mode', type=str, choices=['orphan','artificial'], required=True, help="whether task is real world orphan enhancement or artificial enhancement")
-    parser.add_argument('--repetition_penalty', type=float, default=1.0, help="repetition penalty for generation")
-    parser.add_argument('-a','--augmentation_times', type=int, default=1, help="times of generated quality compared to original msa x1 x3 x5")
-    parser.add_argument('-t', '--trials_times', type=int, default=5)    
-    parser.add_argument('--do_sample', type=bool, default=False, help="Whether or not to use sampling ; use greedy decoding otherwise.")
-    parser.add_argument('--num_beams', type=int, default=1, help="Number of beams for beam search. 1 means no beam search.")
-    parser.add_argument('--num_beam_groups', type=int, default=1, help="Number of groups to divide num_beams into in order to ensure diversity among different groups of beams.")
-    parser.add_argument('--diversity_penalty', type=float, default=1.0, help="diversity penalty for generation, ")
-    parser.add_argument('--temperature', type=float, default=1.0, help="The value used to modulate the next token probabilities.")
-    parser.add_argument('--top_p', type=float, default=1.0, help="If set to float < 1, only the smallest set of most probable tokens with probabilities that add up to top_p or higher are kept for generation.")
-    args=parser.parse_args()
-    assert not (args.do_train and args.do_predict), "select one mode from train and predict"
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="PLAME MSA generation")
+    parser.add_argument("--do_predict", action="store_true", help="Run inference")
+    parser.add_argument("--checkpoints", type=str, help="Path to model checkpoint directory")
+    parser.add_argument("--data_path", type=str, help="Path to input data directory (pickle files)")
+    parser.add_argument("-o", "--output_dir", type=str, default="./output/", help="Output directory")
+    parser.add_argument("--num_alignments", type=int, default=32, help="Number of MSA sequences to generate")
+    parser.add_argument("--device", type=str, default="cpu", help="Inference device (e.g. cuda:0)")
+
+    # Generation parameters
+    parser.add_argument("--mode", type=str, choices=["orphan", "artificial"], required=True,
+                        help="orphan: zero-shot (no existing MSA); artificial: augment existing MSA")
+    parser.add_argument("--repetition_penalty", type=float, default=1.0)
+    parser.add_argument("-a", "--augmentation_times", type=int, default=1,
+                        help="Multiplier for generated sequences (1x, 3x, 5x)")
+    parser.add_argument("-t", "--trials_times", type=int, default=5,
+                        help="Number of independent generation runs")
+    parser.add_argument("--do_sample", type=bool, default=False)
+    parser.add_argument("--num_beams", type=int, default=1)
+    parser.add_argument("--num_beam_groups", type=int, default=1)
+    parser.add_argument("--diversity_penalty", type=float, default=1.0)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--top_p", type=float, default=1.0)
+
+    args = parser.parse_args()
     return args
-    
-if __name__=="__main__":
-    args = parsing_arguments()
-    args_dict = vars(args)
-    args_str = json.dumps(args_dict, indent=4, sort_keys=True)
-    logger.info('paramerters: %s', args_str)
+
+
+if __name__ == "__main__":
+    args = parse_arguments()
+    logger.info("Parameters: %s", json.dumps(vars(args), indent=4, sort_keys=True))
     inference(args)

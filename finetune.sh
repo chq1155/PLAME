@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
+# Train PLAME on 4 GPUs (alternative to finetune_v1.sh which uses 8 GPUs).
+# Override DATA_DIR and OUTPUT_DIR via environment variables.
 
 set -euo pipefail
 
-export NEEL_DEBUG="${NEEL_DEBUG:-INFO}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 
 DATA_DIR="${DATA_DIR:-data/esm_msa/train}"
-OUTPUT_DIR="${OUTPUT_DIR:-outputs/openfold32-large}"
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/plame}"
 
-accelerate launch \
+PYTHONPATH=. accelerate launch \
   --num_processes 4 \
   --num_machines 1 \
   --mixed_precision bf16 \
@@ -39,5 +40,4 @@ accelerate launch \
   --threshold 512 \
   --gradient_accumulation_steps 4 \
   --bf16 True \
-  --optim adamw_torch_fused \
   --max_grad_norm 1.0

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
+# Train PLAME on 8 GPUs with CUDA graphs optimization (primary training recipe).
+# Override DATA_DIR and OUTPUT_DIR via environment variables.
 
 set -euo pipefail
 
-# Paths can be overridden via environment variables to keep the script portable.
 DATA_DIR="${DATA_DIR:-data/esm_msa/train}"
-OUTPUT_DIR="${OUTPUT_DIR:-outputs/plame-v2-pdb}"
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/plame}"
 
-accelerate launch \
+PYTHONPATH=. accelerate launch \
   --num_processes 8 \
   --num_machines 1 \
   --mixed_precision bf16 \

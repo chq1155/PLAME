@@ -77,4 +77,4 @@ dependencies:
       - urllib3==2.2.1
       - xxhash==3.4.1
       - yarl==1.9.4
-prefix: /home/happy/miniconda3/envs/MSA
+  # prefix: set automatically by conda

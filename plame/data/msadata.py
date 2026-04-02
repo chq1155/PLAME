@@ -149,7 +149,6 @@ class BatchConverter(object):
             if self.alphabet.prepend_bos:
                 tokens[i, 0] = self.alphabet.cls_idx
             seq = torch.tensor(
-                #[self.alphabet.get_idx(s) for s in seq_str], dtype=torch.int64
                 [self.alphabet.get_idx(seq_str[i:i + self.k_mer]) for i in range(0, len(seq_str), self.k_mer)], dtype=torch.int64
             )
 
@@ -164,8 +163,8 @@ class BatchConverter(object):
                     i,
                     int(self.alphabet.prepend_bos) : len(seq_str) // self.k_mer
                                                     + int(self.alphabet.prepend_bos),
-                ] = seq[:-1] if len(seq_str) % self.k_mer != 0 else seq # discard or not
-            if self.alphabet.append_eos: # False
+                ] = seq[:-1] if len(seq_str) % self.k_mer != 0 else seq
+            if self.alphabet.append_eos:
                 tokens[
                     i, len(seq_str) // self.k_mer + int(self.alphabet.prepend_bos)
                 ] = self.alphabet.eos_idx
@@ -213,15 +212,10 @@ class MSABatchConverter(BatchConverter):
         else:
             raw_batch = inputs  # type: ignore
 
-        batch_size = len(raw_batch) # 1
+        batch_size = len(raw_batch)
         max_alignments = max(len(msa) for msa in raw_batch)
-        max_seqlen = max(len(seq) // self.k_mer for msa in raw_batch for seq in msa) # 15
+        max_seqlen = max(len(seq) // self.k_mer for msa in raw_batch for seq in msa)
 
-        # if self.alphabet.tokenizer == "rna-3-mixmer":
-        #     max_seqlen = max(math.ceil(len(seq) / self.k_mer) for msa in raw_batch for seq in msa)
-        # else:
-        #     max_seqlen = max(len(seq) // self.k_mer for msa in raw_batch for seq in msa)
-        
         tokens = torch.empty(
             (
                 batch_size,
@@ -255,7 +249,6 @@ class MSABatchConverter(BatchConverter):
         
         batch_size = len(raw_batch)
         num_alignments = labels.shape[1]
-        # num_alignments = 1
         max_seqlen = labels.shape[-1] - int(self.alphabet.prepend_bos) - int(self.alphabet.append_eos)
 
         tokens = torch.empty(
@@ -286,41 +279,6 @@ class MSABatchConverter(BatchConverter):
         
         return esm_embeddings, tokens
     
-    # def infer_batch_convert(self, inputs: Union[str, torch.Tensor], num_alignments: int):
-    #     seq = inputs[0]
-    #     esm = inputs[1]
-    #     batch_size = 1
-    #     max_seqlen = len(seq)
-
-    #     tokens = torch.empty(
-    #         (
-    #             batch_size,
-    #             num_alignments,
-    #             max_seqlen
-    #             + int(self.alphabet.prepend_bos)
-    #             + int(self.alphabet.append_eos),
-    #         ),
-    #     )
-    #     tokens.fill_(self.alphabet.padding_idx)
-        
-    #     esm_embeddings = torch.empty(
-    #         (
-    #             batch_size,
-    #             max_seqlen,
-    #             1280
-    #         )
-    #     )
-    #     esm_embeddings.fill_(self.alphabet.padding_idx)
-        
-    #     esm_tokens = super().esm_convert(esm)
-    #     seq_tokens = super().seq_convert(num_alignments, esm)
-    #     tokens[0, : seq_tokens.size(0), : seq_tokens.size(1)] = seq_tokens
-    #     esm_embeddings[0, : esm_tokens.size(0), : esm_tokens.size(1)] = esm_tokens
-
-    #     print(f"token and esm emb shape: {tokens.shape}, {esm_embeddings.shape}")
-        
-    #     return esm_embeddings, tokens
-
     def infer_batch_convert(self, inputs: Union[str, torch.Tensor], num_alignments: int, plame: bool = False):
         seq = inputs[0]
         esm = inputs[1]
@@ -361,8 +319,6 @@ class MSABatchConverter(BatchConverter):
         # When PLAME mode is enabled, include MSA tokens
         if plame:
             msa_tokens = self.msa_batch_convert(msa)
-            print(f"token and esm emb shape: {msa_tokens.shape}, {esm_embeddings.shape}")
-
             return esm_embeddings, tokens, msa_tokens
         
         return esm_embeddings, tokens
@@ -372,15 +328,6 @@ class MSABatchConverter(BatchConverter):
     
     def to_fp16(self, tensor):
         return tensor.to(torch.float16) if isinstance(tensor, torch.Tensor) else tensor
-
-    # def __call__(self, batch):
-    #     labels = self.msa_batch_convert([example["msa"] for example in batch])
-    #     esm_emb, input_ids = self.esm_batch_convert([example["emb"] for example in batch], labels)
-    #     labels[labels==self.alphabet.padding_idx]=-100
-    #     attention_mask = input_ids.ne(self.alphabet.padding_idx).type_as(input_ids)
-    #     decoder_attention_mask = labels.ne(self.alphabet.padding_idx).type_as(input_ids)
-    #     print(f"input_ids type: {input_ids.dtype}")
-    #     return {'input_ids':input_ids, 'labels':labels, "attention_mask":attention_mask, "decoder_attention_mask":decoder_attention_mask, "esm": esm_emb}
 
     def __call__(self, batch):
         labels = self.msa_batch_convert([example["msa"] for example in batch])
@@ -401,11 +348,8 @@ class MSABatchConverter(BatchConverter):
         }
         
         # Cast tensors to bfloat16 except for token ids
-        outputs = {k: self.to_bf16(v) if k != 'input_ids' else v 
+        outputs = {k: self.to_bf16(v) if k != 'input_ids' else v
                 for k, v in outputs.items()}
-        # outputs = {k: self.to_fp16(v) if k != 'input_ids' else v 
-        #         for k, v in outputs.items()}
-        # print(outputs['input_ids'][0][0][:50], outputs['labels'][0][0][:50])
         return outputs
 
 class MSADataSet(Dataset):
@@ -444,12 +388,6 @@ class MSADataSet(Dataset):
 
     def __getitem__(self, index):
         return self.data[index]
-
-import os
-import pickle
-import random
-from torch.utils.data import Dataset
-from functools import lru_cache
 
 class MSADataSet_(Dataset):
     def __init__(self, data_args, num_alignments, threshold):
@@ -572,10 +510,6 @@ class MSADataSet_v3(Dataset):
 
                     item['msa'] = msa
                     item['msa_input'] = msa_input
-                    # item['msa'] = random.sample(
-                    #     item['msa'], 
-                    #     min(self.num_alignments, len(item['msa']))
-                    # )
                     return item
             except Exception as e:
                 print(f"Error at index {index} ({file_path}): {e}")

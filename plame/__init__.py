@@ -1,5 +1,7 @@
 """PLAME core package."""
 
+__version__ = "1.0.0"
+
 from plame.models.msa import MSAT5  # noqa: F401
 from plame.models.model import MSA_AUGMENTOR  # noqa: F401
 from plame.data.msadata import (  # noqa: F401

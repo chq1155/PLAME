@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
+# Run PLAME inference to generate MSA sequences.
+# Override paths via environment variables.
 
 set -euo pipefail
 
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-./openfold32/checkpoint-200000}"
-DATA_PATH="${DATA_PATH:-data/enzyme}"
-OUTPUT_DIR="${OUTPUT_DIR:-outputs/enzyme_plame}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-./checkpoint-160000}"
+DATA_PATH="${DATA_PATH:-data/inference_input}"
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/plame_output}"
 
-python scripts/inference.py --do_predict \
+PYTHONPATH=. python scripts/inference.py --do_predict \
   --checkpoints "${CHECKPOINT_DIR}" \
   --data_path "${DATA_PATH}" \
   --output_dir "${OUTPUT_DIR}" \
   --device cuda:0 \
-  --mode artificial \
-  --num_alignments 100 \
+  --mode orphan \
+  --num_alignments 32 \
   --augmentation_times 1 \
   --trials_times 1 \
   --repetition_penalty 1.0 \

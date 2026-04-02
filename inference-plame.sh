@@ -1,18 +1,24 @@
-python inference_old.py --do_predict \
-    --checkpoints ./openfold32/checkpoint-180000 \
-    --data_path /data/d0/gds/hqcao23/hqcao/gx/Protein_MSA_Fold/average_protein/avg_bench \
-    --output_dir /data/d0/gds/hqcao23/hqcao/gx/Protein_MSA_Fold/average_protein/avg_out \
-    --device cuda:0 \
-    --mode artificial \
-    --num_alignments 32 \
-    --augmentation_times 1 \
-    --trials_times 1 \
-    --repetition_penalty 1.0 \
-    --temperature 1.0 \
-    --top_p 0.95 \
-    --device "cuda" \
-    --zero_shot False \
-    --plame True \
-    --do_sample True \
-    --num_beams 16 \
-    --num_beam_groups 4 \
+#!/usr/bin/env bash
+# Inference in PLAME mode (MSA-conditioned generation).
+
+set -euo pipefail
+
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-./checkpoint-160000}"
+DATA_PATH="${DATA_PATH:-data/inference_input}"
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/plame_output}"
+
+PYTHONPATH=. python scripts/inference.py --do_predict \
+  --checkpoints "${CHECKPOINT_DIR}" \
+  --data_path "${DATA_PATH}" \
+  --output_dir "${OUTPUT_DIR}" \
+  --device cuda:0 \
+  --mode artificial \
+  --num_alignments 32 \
+  --augmentation_times 1 \
+  --trials_times 1 \
+  --repetition_penalty 1.0 \
+  --temperature 1.0 \
+  --top_p 0.95 \
+  --do_sample True \
+  --num_beams 1 \
+  --num_beam_groups 1
