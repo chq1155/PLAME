@@ -1509,10 +1509,13 @@ tokenizer idx mapping:
 '.': 29, '-': 30, '<null_1>': 31, '<mask>': 32}
 """
 class PSSMWeightedCELoss(nn.Module):
-    def __init__(self, padding_idx=-100, pseudocount=1.0):
+    def __init__(self, padding_idx=-100, pseudocount=1.0, dire_weight=0.1):
         super().__init__()
         self.padding_idx = padding_idx
         self.pseudocount = pseudocount
+        # Weight lambda on the DIRE (diversity) term: L = L_PCE + lambda * L_DIRE.
+        # lambda = 0.1 is the published setting; lambda = 0 disables DIRE.
+        self.dire_weight = dire_weight
         
         self.alphabet = 'ACDEFGHIKLMNPQRSTVWY'
         self.aa_to_idx = {aa: idx for idx, aa in enumerate(self.alphabet)}
@@ -1619,13 +1622,12 @@ class PSSMWeightedCELoss(nn.Module):
             weighted_ce_loss = (ce_loss_unreduced * pssm_weights).mean()
             ce_loss = ce_loss_unreduced.mean()
 
-            alpha = 0.0
             probs = F.softmax(lm_logits.float(), dim=-1)
             entropy = -torch.sum(probs * torch.log(probs + 1e-6), dim=-1)
             mask = (labels != self.padding_idx).float()
             diversity_loss = -torch.sum(entropy * mask) / (mask.sum() + 1e-6)
 
-            loss = weighted_ce_loss + alpha * diversity_loss
+            loss = weighted_ce_loss + self.dire_weight * diversity_loss
 
             return loss, weighted_ce_loss, ce_loss, diversity_loss
 

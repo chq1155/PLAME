@@ -1,0 +1,72 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper below."
+title: "PLAME: Lightweight MSA Design Advances Protein Folding From Evolutionary Embeddings"
+type: software
+license: MIT
+repository-code: "https://github.com/chq1155/PLAME"
+authors:
+  - family-names: Cao
+    given-names: Hanqun
+    orcid: "https://orcid.org/0000-0002-8104-1845"
+    affiliation: "The Chinese University of Hong Kong"
+  - family-names: Zhou
+    given-names: Xinyi
+    affiliation: "The Chinese University of Hong Kong"
+  - family-names: Gao
+    given-names: Zijun
+    affiliation: "The Chinese University of Hong Kong"
+  - family-names: Wang
+    given-names: Chenyu
+    affiliation: "Massachusetts Institute of Technology"
+  - family-names: Gao
+    given-names: Xin
+    affiliation: "University of California, San Diego"
+  - family-names: Zhang
+    given-names: Zhi
+    affiliation: "University of Amsterdam"
+  - family-names: Hsieh
+    given-names: Chang-Yu
+    affiliation: "Zhejiang University"
+  - family-names: de la Fuente-Nunez
+    given-names: Cesar
+    orcid: "https://orcid.org/0000-0002-2005-5629"
+    affiliation: "University of Pennsylvania"
+  - family-names: Gu
+    given-names: Chunbin
+    affiliation: "The Chinese University of Hong Kong"
+  - family-names: Liu
+    given-names: Ge
+    affiliation: "University of Illinois at Urbana-Champaign"
+  - family-names: Heng
+    given-names: Pheng Ann
+    affiliation: "The Chinese University of Hong Kong"
+preferred-citation:
+  type: article
+  title: "Lightweight MSA Design Advances Protein Folding From Evolutionary Embeddings"
+  journal: "Cell Reports Physical Science"
+  year: 2026
+  authors:
+    - family-names: Cao
+      given-names: Hanqun
+      orcid: "https://orcid.org/0000-0002-8104-1845"
+    - family-names: Zhou
+      given-names: Xinyi
+    - family-names: Gao
+      given-names: Zijun
+    - family-names: Wang
+      given-names: Chenyu
+    - family-names: Gao
+      given-names: Xin
+    - family-names: Zhang
+      given-names: Zhi
+    - family-names: Hsieh
+      given-names: Chang-Yu
+    - family-names: de la Fuente-Nunez
+      given-names: Cesar
+      orcid: "https://orcid.org/0000-0002-2005-5629"
+    - family-names: Gu
+      given-names: Chunbin
+    - family-names: Liu
+      given-names: Ge
+    - family-names: Heng
+      given-names: Pheng Ann

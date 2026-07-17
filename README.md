@@ -41,15 +41,22 @@ python -c "from plame import MSAT5, MSA_AUGMENTOR; print('OK')"
 
 **Download the pretrained checkpoint:**
 
-| Checkpoint | Link |
-|------------|------|
-| `checkpoint-160000` (200K steps, d_model=768) | [Google Drive](https://drive.google.com/file/d/1mokB2dnxfm80QjtGEa2atgTw-YTxyqX9/view?usp=sharing) |
+The trained weights and all MSAs generated in the paper are archived at Zenodo:
+
+| Item | Link |
+|------|------|
+| `checkpoint-160000` (200K steps, d_model=768) + generated MSAs | [Zenodo, DOI 10.5281/zenodo.XXXXXXX](https://doi.org/10.5281/zenodo.XXXXXXX) |
 
 ```bash
-# Download and extract (or use gdown: pip install gdown)
-gdown 1mokB2dnxfm80QjtGEa2atgTw-YTxyqX9
-tar xzf checkpoint-160000.tar.gz
+# Download PLAME_record1_data_model.zip from the Zenodo record above, then:
+unzip PLAME_record1_data_model.zip
+mkdir -p checkpoint-160000
+cp record1_data_model/model/* checkpoint-160000/
 ```
+
+Read the model config from the checkpoint directory, not from `config/` — the released
+checkpoint is `d_model=768` while the training config is `d_model=1024`, and mixing them
+breaks weight loading.
 
 Generate MSAs for your proteins in three steps:
 
@@ -211,8 +218,9 @@ Input: ESM2-650M embedding (L x 1280)
 ```
 
 **Loss function** (conservation-diversity):
-- **PCE Loss** (α=0.9): PSSM-weighted cross-entropy emphasizing conserved positions
-- **DIRE Loss** (1-α=0.1): Entropy regularizer promoting sequence diversity
+`L = L_PCE + λ · L_DIRE` with `λ = 0.1` (`dire_weight` on `PSSMWeightedCELoss`):
+- **PCE Loss**: PSSM-weighted cross-entropy emphasizing conserved positions
+- **DIRE Loss** (λ=0.1): Entropy regularizer promoting sequence diversity; `dire_weight=0` disables it
 
 ---
 

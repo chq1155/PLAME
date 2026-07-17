@@ -1,5 +1,7 @@
 torch>=2.0
-transformers>=4.21
+# Must be 4.x: plame/models/msa.py imports transformers.generation.beam_constraints
+# and .beam_search, which were removed in transformers 5.x.
+transformers>=4.21,<5
 accelerate
 datasets>=1.8
 biopython>=1.80
