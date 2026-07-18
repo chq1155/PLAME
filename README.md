@@ -8,8 +8,6 @@ PLAME is a lightweight framework for generating protein multiple sequence alignm
 - HiFiAD selection strategy filters high-quality generated MSA candidates
 - Compatible with AlphaFold2, AlphaFold3, and ESMFold as downstream folding tools
 
-> **Paper:** *Lightweight MSA Design Advances Protein Folding from Evolutionary Embeddings* (ICLR 2026)
-
 ---
 
 ## Installation
@@ -18,7 +16,7 @@ PLAME is a lightweight framework for generating protein multiple sequence alignm
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-org>/PLAME.git
+git clone https://github.com/chq1155/PLAME.git
 cd PLAME
 
 # Create conda environment
@@ -45,13 +43,13 @@ The trained weights and all MSAs generated in the paper are archived at Zenodo:
 
 | Item | Link |
 |------|------|
-| `checkpoint-160000` (200K steps, d_model=768) + generated MSAs | [Zenodo, DOI 10.5281/zenodo.XXXXXXX](https://doi.org/10.5281/zenodo.XXXXXXX) |
+| `checkpoint-160000` (200K steps, d_model=768) + generated MSAs | [Zenodo, DOI 10.5281/zenodo.21429061](https://doi.org/10.5281/zenodo.21429061) |
 
 ```bash
-# Download PLAME_record1_data_model.zip from the Zenodo record above, then:
-unzip PLAME_record1_data_model.zip
+# From the Zenodo record above, download model.zip (weights) and msa.zip (MSAs):
+unzip model.zip                 # -> model/pytorch_model.bin, config.json, generation_config.json
 mkdir -p checkpoint-160000
-cp record1_data_model/model/* checkpoint-160000/
+cp model/* checkpoint-160000/
 ```
 
 Read the model config from the checkpoint directory, not from `config/` — the released
@@ -251,17 +249,6 @@ PLAME/
 
 ---
 
-## Citation
-
-```bibtex
-@inproceedings{plame2026,
-  title={Lightweight MSA Design Advances Protein Folding from Evolutionary Embeddings},
-  author={Anonymous},
-  booktitle={International Conference on Learning Representations (ICLR)},
-  year={2026}
-}
-```
-
 ## License
 
-This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
